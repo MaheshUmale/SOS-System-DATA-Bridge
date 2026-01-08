@@ -60,14 +60,6 @@ try:
 except ImportError:
     UPSTOX_AVAILABLE = False
     print("[WARN] Upstox SDK or config not found. Level 3 Fallback disabled.")
-# Upstox SDK Imports
-try:
-    import upstox_client
-    import config
-    UPSTOX_AVAILABLE = True
-except ImportError:
-    UPSTOX_AVAILABLE = False
-    print("[WARN] Upstox SDK or config not found. Level 3 Fallback disabled.")
 # Configuration
 # Adding more comprehensive list of symbols for scanning
 SYMBOLS = [
@@ -263,11 +255,62 @@ class SOSDataBridgeClient:
         return candles
 
     def _fetch_candles_upstox(self):
-        """Primary: Fetch from Upstox API."""
-        # This is a simplified version of the original Upstox logic
-        # In a real scenario, this would involve the full API client setup
-        pass # Placeholder for Upstox logic
-        return []
+        """PRIMARY: Fetch latest intraday candles using Upstox HistoryV3 API."""
+        if not UPSTOX_AVAILABLE or not config.ACCESS_TOKEN:
+            print("[CRITICAL] Upstox Fallback unavailable (No Token/SDK).")
+            return []
+
+        upstox_candles = []
+        try:
+            configuration = upstox_client.Configuration()
+            configuration.access_token = config.ACCESS_TOKEN
+            api_client = upstox_client.ApiClient(configuration)
+            history_api = upstox_client.HistoryV3Api(api_client) # Use HistoryV3Api
+
+            ts = int(time.time() // 60 * 60 * 1000)
+
+            for sym in self.symbols:
+                u_key = SymbolMaster.get_upstox_key(sym)
+                if not u_key: continue
+
+                try:
+                    # Fetch Intraday Data (Current Day)
+                    # Verified Signature: (instrument_key, unit="minutes", interval="1")
+                    response = history_api.get_intra_day_candle_data(u_key, "minutes", "1")
+
+                    if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
+                        candles = response.data.candles
+                        if not candles: continue
+
+                        sorted_candles = sorted(candles, key=lambda x: x[0], reverse=True)
+                        last_candle = sorted_candles[0]
+
+                        ltp = float(last_candle[4]) # Close
+                        op = float(last_candle[1])
+                        hi = float(last_candle[2])
+                        lo = float(last_candle[3])
+                        vol = int(last_candle[5])
+
+                        # Create Candle Packet
+                        c_data = {
+                            "symbol": sym, "timestamp": ts,
+                            "1m": {
+                                "open": op, "high": hi, "low": lo, "close": ltp, "volume": vol,
+                            }
+                        }
+                        upstox_candles.append(c_data)
+
+                except Exception as inner_e:
+                     # print(f"[UPSTOX INNER ERROR] {sym}: {inner_e}")
+                     continue
+
+            if upstox_candles:
+                 print(f"[UPSTOX PRIMARY] Recovered {len(upstox_candles)} symbols.")
+            return upstox_candles
+
+        except Exception as e:
+            print(f"[CRITICAL] Upstox Primary Failed: {e}")
+            return []
 
     def _fetch_candles_tv(self):
         """Secondary: Fetch from TradingView Screener."""
@@ -285,6 +328,31 @@ class SOSDataBridgeClient:
                 })
         return candles
 
+    async def publish_option_chain(self):
+        """
+        Periodically fetches and sends `OPTION_CHAIN_UPDATE` messages.
+        """
+        loop = asyncio.get_running_loop()
+        while True:
+            if TrendlyneDB and fetch_live_snapshot:
+                for sym in ["NIFTY", "BANKNIFTY"]:
+                    try:
+                        chain = await loop.run_in_executor(None, fetch_live_snapshot, sym)
+                        if chain:
+                            message = {
+                                "type": "OPTION_CHAIN_UPDATE",
+                                "timestamp": int(time.time() * 1000),
+                                "data": {
+                                    "symbol": sym,
+                                    "chain": chain
+                                }
+                            }
+                            await self.send_message(message)
+                    except Exception as e:
+                        print(f"[OCR ERROR] {sym}: {e}")
+
+            await asyncio.sleep(60) # Update chain every 60 seconds
+
     async def connect_and_run(self):
         """
         Main loop to manage connection and run data publishing tasks.
@@ -301,7 +369,8 @@ class SOSDataBridgeClient:
                     # These tasks will run until one of them fails (e.g., connection drops)
                     await asyncio.gather(
                         self.publish_candles(),
-                        self.publish_sentiment_update()
+                        self.publish_sentiment_update(),
+                        self.publish_option_chain()
                     )
             except (websockets.exceptions.ConnectionClosedError, OSError) as e:
                 print(f"Connection lost: {e}. Reconnecting in {backoff_delay}s...")
