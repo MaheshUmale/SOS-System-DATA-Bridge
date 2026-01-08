@@ -7,17 +7,9 @@ import time
 import sqlite3
 import os
 import json
+import argparse
 from datetime import datetime, timedelta, date
 
-# Upstox SDK
-try:
-    import upstox_client
-    from upstox_client.rest import ApiException
-    import config
-    UPSTOX_AVAILABLE = True
-except ImportError:
-    UPSTOX_AVAILABLE = False
-    print("[WARN] Upstox SDK not found. Option Chain will rely on Trendlyne only.")
 
 from SymbolMaster import MASTER as SymbolMaster
 
@@ -285,10 +277,6 @@ def backfill_from_trendlyne(symbol, stock_id, expiry_date_str, timestamp_snapsho
         print(f"[ERROR] Fetch {symbol} @ {timestamp_snapshot}: {e}")
         return False
 
-    except Exception as e:
-        print(f"[ERROR] Fetch {symbol} @ {timestamp_snapshot}: {e}")
-        return False
-
 def fetch_live_snapshot_upstox(symbol):
     """
     Fetches live option chain from Upstox Primary API and saves to DB.
@@ -473,27 +461,40 @@ def generate_time_intervals(start_time="09:15", end_time="15:30", interval_minut
         current += timedelta(minutes=interval_minutes)
     return times
 
-def run_backfill(symbols_list=None):
+def run_backfill(symbols_list=None, full_run=False):
     if not symbols_list:
         symbols_list = ["NIFTY", "BANKNIFTY", "RELIANCE", "SBIN", "HDFCBANK"]
 
     print("=" * 60)
-    print(f"STARTING TRENDLYNE BACKFILL (1-MIN INTERVALS)")
+    if full_run:
+        print("STARTING TRENDLYNE BACKFILL (FULL DAY)")
+    else:
+        print("STARTING TRENDLYNE BACKFILL (LAST 15 MINS)")
     print("=" * 60)
 
     now = datetime.now()
     market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    start_time_str = "09:15"
 
     if now < market_open:
-        end_time_str = "15:30" # Assume yesterday or full day backfill loop
-    elif now > market_close:
+        end_time_str = "15:30"
+    elif now > now.replace(hour=15, minute=30, second=0, microsecond=0):
         end_time_str = "15:30"
     else:
         end_time_str = now.strftime("%H:%M")
 
-    time_slots = generate_time_intervals(end_time=end_time_str)
-    print(f"Time Slots: {len(time_slots)} | Symbols: {len(symbols_list)}")
+    if not full_run:
+        end_dt = datetime.strptime(end_time_str, "%H:%M")
+        start_dt = end_dt - timedelta(minutes=15)
+        start_time_str = start_dt.strftime("%H:%M")
+
+        # Ensure we don't request data from before market open
+        if start_dt.time() < market_open.time():
+            start_time_str = "09:15"
+
+    time_slots = generate_time_intervals(start_time=start_time_str, end_time=end_time_str)
+    print(f"Time Slots: {len(time_slots)} ({start_time_str} to {end_time_str}) | Symbols: {len(symbols_list)}")
 
     for symbol in symbols_list:
         stock_id = get_stock_id_for_symbol(symbol)
@@ -527,8 +528,10 @@ def run_backfill(symbols_list=None):
             print(f"[FAIL] {symbol}: {e}")
 
 if __name__ == "__main__":
-    # You can pass specific symbols or let it use defaults
-    # For now, let's target Nifty and BankNifty
+    parser = argparse.ArgumentParser(description="Trendlyne Data Backfill Script")
+    parser.add_argument('--full', action='store_true', help='Perform a full-day backfill instead of the default last 15 minutes.')
+    args = parser.parse_args()
+
     target_symbols = ["NIFTY", "BANKNIFTY", "RELIANCE"]
-    run_backfill(target_symbols)
-    print("\n[DB PATH]:", os.path.abspath("options_data.db"))
+    run_backfill(target_symbols, full_run=args.full)
+    print("\n[DB PATH]:", os.path.abspath("sos_master_data.db"))
