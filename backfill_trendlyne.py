@@ -13,6 +13,16 @@ from datetime import datetime, timedelta, date
 
 from SymbolMaster import MASTER as SymbolMaster
 
+# Upstox SDK
+try:
+    import upstox_client
+    from upstox_client.rest import ApiException
+    import config
+    UPSTOX_AVAILABLE = True
+except ImportError:
+    UPSTOX_AVAILABLE = False
+    print("[WARN] Upstox SDK not found. Option Chain will rely on Trendlyne only.")
+
 # ==========================================================================
 # 1. DATABASE LAYER (SQLite)
 # ==========================================================================
@@ -396,6 +406,7 @@ def fetch_live_snapshot_upstox(symbol):
     except Exception as e:
         print(f"[UPSTOX OCR FAIL] {symbol}: {e}")
         return None
+
 
 def fetch_live_snapshot(symbol):
 

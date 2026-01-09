@@ -19,7 +19,7 @@ Usage:
 Dependencies:
     - websockets, pandas, requests
     - tradingview-screener, yfinance
-    - upstox-client (optional, for Level 1 fallback)
+    - upstox-client (optional, for primary data source)
     - backfill_trendlyne (optional, for historical option chain)
 
 Author: Mahesh
@@ -139,8 +139,17 @@ class SOSDataBridgeClient:
             data = self.nse.get_market_breadth()
             if data and 'advance' in data:
                 counts = data['advance'].get('count', {})
-                self.market_breadth['advances'] = counts.get('Advances', 0)
-                self.market_breadth['declines'] = counts.get('Declines', 0)
+                advances = counts.get('Advances', 0)
+                declines = counts.get('Declines', 0)
+                self.market_breadth['advances'] = advances
+                self.market_breadth['declines'] = declines
+
+                # Persist Market Breadth
+                if TrendlyneDB:
+                    ts = int(time.time())
+                    adv_dec_ratio = advances / declines if declines > 0 else advances
+                    TrendlyneDB.save_market_depth(ts, "NIFTY_TOTAL", 0, 0, adv_dec_ratio)
+
         except Exception as e:
             print(f"[WARN] NSE Breadth fetch failed: {e}. Using stale data.")
 
@@ -275,8 +284,7 @@ class SOSDataBridgeClient:
 
                 try:
                     # Fetch Intraday Data (Current Day)
-                    # Verified Signature: (instrument_key, unit="minutes", interval="1")
-                    response = history_api.get_intra_day_candle_data(u_key, "minutes", "1")
+                    response = history_api.get_intra_day_candle_data(u_key, "1minute")
 
                     if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
                         candles = response.data.candles
