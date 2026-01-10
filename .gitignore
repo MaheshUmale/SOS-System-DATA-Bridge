@@ -1,1 +1,7 @@
+*.log
+*.jar
+*.class
+target/
+__pycache__/
+*.db
 config.py
