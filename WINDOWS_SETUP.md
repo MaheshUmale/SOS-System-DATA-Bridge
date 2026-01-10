@@ -1,20 +1,33 @@
 # Running the SOS Integration Project on Windows
 
-This guide provides step-by-step instructions for setting up and running the SOS (Scalping Orchestration System) integration project on a Windows laptop. The project is containerized using Docker, so you will need to have Docker Desktop installed.
+This guide provides step-by-step instructions for setting up and running the SOS (Scalping Orchestration System) integration project on a Windows laptop. You can run the project using Docker (recommended for a consistent environment) or locally on your machine.
 
-## Prerequisites
+## Running with Docker (Recommended)
 
-*   **Windows 10 or 11:** This guide is written for modern versions of Windows.
-*   **Docker Desktop:** You must have Docker Desktop for Windows installed and running. You can download it from the [official Docker website](https://www.docker.com/products/docker-desktop/).
+... (existing Docker instructions) ...
+
+## Running Locally (Without Docker)
+
+This section provides instructions for running the Data Bridge and Core Engine directly on your Windows machine.
+
+### Prerequisites
+
+*   **Python 3.10:** You will need Python 3.10 installed. You can download it from the [official Python website](https://www.python.org/downloads/).
+*   **Java 11:** You will need the Java Development Kit (JDK) version 11. You can download it from [Oracle](https://www.oracle.com/java/technologies/javase-jdk11-downloads.html) or use an open-source distribution like [Eclipse Temurin](https://adoptium.net/).
+*   **Apache Maven:** You will need Apache Maven to build the Core Engine. You can download it from the [official Maven website](https://maven.apache.org/download.cgi).
 *   **Git:** You will need Git to clone the project repositories. You can download it from the [official Git website](https://git-scm.com/downloads).
 *   **A text editor or IDE:** You will need a text editor or an Integrated Development Environment (IDE) to edit configuration files. [Visual Studio Code](https://code.visualstudio.com/) is a good free option.
 
-## Step 1: Clone the Repositories
+### Step 1: Clone the Repositories
 
-First, you need to clone both the `SOS-System-DATA-Bridge` and `Scalping-Orchestration-System-SOS-` repositories from GitHub.
+First, you need to create a new directory for the project and then clone the `SOS-System-DATA-Bridge` and `Scalping-Orchestration-System-SOS-` repositories into it as sibling directories.
 
 1.  Open a new terminal or PowerShell window.
-2.  Navigate to the directory where you want to store the project.
+2.  Create a new directory for the project and navigate into it:
+    ```bash
+    mkdir sos-integration
+    cd sos-integration
+    ```
 3.  Clone the `SOS-System-DATA-Bridge` repository:
     ```bash
     git clone https://github.com/MaheshUmale/SOS-System-DATA-Bridge.git
@@ -24,7 +37,7 @@ First, you need to clone both the `SOS-System-DATA-Bridge` and `Scalping-Orchest
     git clone https://github.com/MaheshUmale/Scalping-Orchestration-System-SOS-.git
     ```
 
-## Step 2: Configure the Upstox API Key
+### Step 2: Configure the Upstox API Key
 
 The Data Bridge requires an Upstox API key to fetch market data.
 
@@ -35,41 +48,37 @@ The Data Bridge requires an Upstox API key to fetch market data.
     ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
     ```
 
-## Step 3: Build and Run the Containers
+### Step 3: Run the Core Engine
 
-The project is orchestrated using `docker-compose`.
-
-1.  Make sure Docker Desktop is running.
-2.  Open a terminal or PowerShell window in the `SOS-System-DATA-Bridge` directory.
-3.  Run the following command to build the Docker images and start the containers:
+1.  Open a new terminal or PowerShell window and navigate to the `Scalping-Orchestration-System-SOS-` directory.
+2.  Build the project using Maven:
     ```bash
-    docker compose up --build
+    mvn clean package
     ```
-    This command will:
-    *   Build the Docker image for the `data-bridge` service.
-    *   Build the Docker image for the `core-engine` service.
-    *   Start both containers and connect them to a shared network.
-
-## Step 4: Verify the Integration
-
-You can monitor the logs of the two services to verify that the integration is working correctly.
-
-1.  Open a new terminal or PowerShell window.
-2.  To view the logs of the `data-bridge`, run:
+3.  Run the Core Engine application:
     ```bash
-    docker logs data-bridge
+    java -jar sos-engine/target/sos-engine-1.0-SNAPSHOT.jar
     ```
-    You should see output indicating that the Data Bridge is fetching data from the Upstox API and sending it to the Core Engine.
-3.  To view the logs of the `core-engine`, run:
+    The Core Engine will start and begin listening for WebSocket connections on port 8765.
+
+### Step 4: Run the Data Bridge
+
+1.  Open a new terminal or PowerShell window and navigate to the `SOS-System-DATA-Bridge` directory.
+2.  Install the required Python dependencies:
     ```bash
-    docker logs core-engine
+    pip install -r requirements.txt
     ```
-    You should see output indicating that the Core Engine is receiving and processing messages from the Data Bridge.
+3.  Run the Data Bridge script:
+    ```bash
+    python tv_data_bridge.py
+    ```
+    The Data Bridge will start, connect to the Core Engine, and begin sending data.
 
-## Troubleshooting
+### Step 5: Verify the Integration
 
-*   **`docker compose` command not found:** If you get an error that the `docker compose` command is not found, you may have an older version of Docker. Try using `docker-compose` (with a hyphen) instead.
-*   **Permission errors:** If you encounter permission errors when running `docker` commands, you may need to run your terminal or PowerShell as an administrator.
-*   **Build failures:** If the Docker images fail to build, check the output for any error messages. The most common issues are related to network connectivity or missing dependencies.
+You can monitor the output of the two terminals to verify that the integration is working correctly.
 
-That's it! You should now have the SOS integration project up and running on your Windows laptop.
+*   The Core Engine terminal should show that it is receiving and processing messages from the Data Bridge.
+*   The Data Bridge terminal should show that it is fetching data from the Upstox API and sending it to the Core Engine.
+
+That's it! You should now have the SOS integration project up and running on your Windows laptop without Docker.
