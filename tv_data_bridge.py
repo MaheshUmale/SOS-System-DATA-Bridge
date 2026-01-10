@@ -19,13 +19,13 @@ Usage:
 Dependencies:
     - websockets, pandas, requests
     - tradingview-screener, yfinance
-    - upstox-client (optional, for Level 1 fallback)
+    - upstox-client (optional, for primary data source)
     - backfill_trendlyne (optional, for historical option chain)
 
 Author: Mahesh
 Version: 3.0 (Contract-Compliant Refactor)
 """
-
+print("--- Data Bridge script started ---")
 import time
 import json
 import argparse
@@ -71,33 +71,34 @@ SYMBOLS = [
 ]
 
 class SOSDataBridgeClient:
-    def __init__(self, symbols, port=8765):
-        self.uri = f"ws://localhost:{port}"
+    def __init__(self, symbols, host='localhost', port=8765):
+        self.uri = f"ws://{host}:{port}"
         self.symbols = symbols
         self.nse = NSEHistoricalAPI()
         self.tickers = [f"NSE:{s}" for s in symbols]
         self.websocket = None
+        self.connection_established = asyncio.Event()
         self.pcr_data = {"NIFTY": 1.0, "BANKNIFTY": 1.0}
         self.market_breadth = {"advances": 0, "declines": 0} # Simplified state
 
     async def send_message(self, message):
         """Generic method to send a JSON message to the SOS Engine."""
-        if self.websocket and self.websocket.open:
-            try:
-                await self.websocket.send(json.dumps(message))
-                return True
-            except websockets.ConnectionClosed:
-                print("[WARN] Connection closed while sending. Will attempt reconnect.")
-                self.websocket = None
-                return False
-        else:
+        if not self.websocket:
             print("[WARN] No active connection. Message dropped.")
+            return False
+        try:
+            await self.websocket.send(json.dumps(message))
+            return True
+        except websockets.ConnectionClosed:
+            print("[WARN] Connection closed while sending. Will attempt reconnect.")
+            self.websocket = None
             return False
 
     async def publish_sentiment_update(self):
         """
         Calculates and sends the `SENTIMENT_UPDATE` message every 30 seconds.
         """
+        await self.connection_established.wait()
         while True:
             # 1. Update PCR and Breadth Data (in-memory)
             await self.update_pcr_and_breadth()
@@ -139,8 +140,17 @@ class SOSDataBridgeClient:
             data = self.nse.get_market_breadth()
             if data and 'advance' in data:
                 counts = data['advance'].get('count', {})
-                self.market_breadth['advances'] = counts.get('Advances', 0)
-                self.market_breadth['declines'] = counts.get('Declines', 0)
+                advances = counts.get('Advances', 0)
+                declines = counts.get('Declines', 0)
+                self.market_breadth['advances'] = advances
+                self.market_breadth['declines'] = declines
+
+                # Persist Market Breadth
+                if TrendlyneDB:
+                    ts = int(time.time())
+                    adv_dec_ratio = advances / declines if declines > 0 else advances
+                    TrendlyneDB.save_market_depth(ts, "NIFTY_TOTAL", 0, 0, adv_dec_ratio)
+
         except Exception as e:
             print(f"[WARN] NSE Breadth fetch failed: {e}. Using stale data.")
 
@@ -170,9 +180,10 @@ class SOSDataBridgeClient:
 
     async def publish_candles(self):
         """
-        Continuously fetches candle data and sends `CANDLE_UPDATE` messages
+        Continuously fetches candle data and sends `CANDALE_UPDATE` messages
         for each symbol.
         """
+        await self.connection_established.wait()
         while True:
             # This logic fetches all symbols at once
             all_candles_data = await self.fetch_all_candles()
@@ -275,8 +286,7 @@ class SOSDataBridgeClient:
 
                 try:
                     # Fetch Intraday Data (Current Day)
-                    # Verified Signature: (instrument_key, unit="minutes", interval="1")
-                    response = history_api.get_intra_day_candle_data(u_key, "minutes", "1")
+                    response = history_api.get_intra_day_candle_data(u_key, "1minute")
 
                     if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
                         candles = response.data.candles
@@ -332,6 +342,7 @@ class SOSDataBridgeClient:
         """
         Periodically fetches and sends `OPTION_CHAIN_UPDATE` messages.
         """
+        await self.connection_established.wait()
         loop = asyncio.get_running_loop()
         while True:
             if TrendlyneDB and fetch_live_snapshot:
@@ -363,18 +374,21 @@ class SOSDataBridgeClient:
             try:
                 async with websockets.connect(self.uri) as websocket:
                     self.websocket = websocket
+                    self.connection_established.set()
                     print(f"Connected to SOS Engine at {self.uri}")
                     backoff_delay = 1  # Reset delay on successful connection
 
                     # These tasks will run until one of them fails (e.g., connection drops)
                     await asyncio.gather(
                         self.publish_candles(),
-                        self.publish_sentiment_update(),
-                        self.publish_option_chain()
+                        self.publish_sentiment_update()
+                        # TODO: Enable when Core Engine supports option chain data
+                        # self.publish_option_chain()
                     )
             except (websockets.exceptions.ConnectionClosedError, OSError) as e:
                 print(f"Connection lost: {e}. Reconnecting in {backoff_delay}s...")
                 self.websocket = None
+                self.connection_established.clear()
                 await asyncio.sleep(backoff_delay)
                 backoff_delay = min(backoff_delay * 2, 60) # Cap at 60s
             except Exception as e:
@@ -393,8 +407,9 @@ class SOSDataBridgeClient:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SOS Engine Data Bridge Client")
+    parser.add_argument('--host', type=str, default='localhost', help='WebSocket host of the SOS Engine')
     parser.add_argument('--port', type=int, default=8765, help='WebSocket port of the SOS Engine')
     args = parser.parse_args()
 
-    client = SOSDataBridgeClient(SYMBOLS, port=args.port)
+    client = SOSDataBridgeClient(SYMBOLS, host=args.host, port=args.port)
     client.run()

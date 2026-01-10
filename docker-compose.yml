@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  data-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: data-bridge
+    command: ["python", "-u", "tv_data_bridge.py", "--host", "core-engine"]
+    networks:
+      - sos-network
+    depends_on:
+      - core-engine
+
+  core-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.core-engine
+    container_name: core-engine
+    ports:
+      - "8765:8765"
+    networks:
+      - sos-network
+
+networks:
+  sos-network:
+    driver: bridge

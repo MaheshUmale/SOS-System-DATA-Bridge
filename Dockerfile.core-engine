@@ -1,0 +1,24 @@
+# Stage 1: Build the application
+FROM maven:3.8.4-openjdk-11 AS build
+
+WORKDIR /app
+
+# Copy the entire sos-engine directory into the build stage
+COPY ./Scalping-Orchestration-System-SOS-/sos-engine /app
+
+# Build the application
+RUN mvn clean package
+
+# Stage 2: Create the runtime image
+FROM eclipse-temurin:11-jre
+
+WORKDIR /app
+
+# Copy the packaged jar from the build stage
+COPY --from=build /app/target/sos-engine-1.0-SNAPSHOT.jar /app/sos-engine.jar
+
+# Expose the WebSocket port
+EXPOSE 8765
+
+# Run the application
+CMD ["java", "-jar", "sos-engine.jar"]
