@@ -266,9 +266,17 @@ class SOSDataBridgeClient:
         return candles
 
     def _fetch_candles_upstox(self):
-        """PRIMARY: Fetch latest intraday candles using Upstox HistoryV3 API."""
-        if not UPSTOX_AVAILABLE or not config.ACCESS_TOKEN:
-            print("[CRITICAL] Upstox Fallback unavailable (No Token/SDK).")
+        """PRIMARY: Fetch historical candles for a specific date using Upstox API."""
+        if not UPSTOX_AVAILABLE:
+            print("[CRITICAL] Upstox SDK not available.")
+            return []
+        try:
+            import config
+            if not hasattr(config, 'ACCESS_TOKEN') or not config.ACCESS_TOKEN:
+                print("[CRITICAL] Upstox access token not configured.")
+                return []
+        except ImportError:
+            print("[CRITICAL] config.py not found.")
             return []
 
         upstox_candles = []
@@ -276,46 +284,53 @@ class SOSDataBridgeClient:
             configuration = upstox_client.Configuration()
             configuration.access_token = config.ACCESS_TOKEN
             api_client = upstox_client.ApiClient(configuration)
-            history_api = upstox_client.HistoryV3Api(api_client) # Use HistoryV3Api
+            history_api = upstox_client.HistoryV3Api(api_client)
 
-            ts = int(time.time() // 60 * 60 * 1000)
+            # Hardcode the date for the test
+            target_date = "2026-01-09"
+            ts = int(datetime.strptime(target_date, "%Y-%m-%d").timestamp() * 1000)
 
             for sym in self.symbols:
                 u_key = SymbolMaster.get_upstox_key(sym)
                 if not u_key: continue
 
                 try:
-                    # Fetch Intraday Data (Current Day)
-                    response = history_api.get_intra_day_candle_data(u_key, "1minute")
+                    # Fetch historical data for the specified date
+                    response = history_api.get_historical_candle_data1(
+                        instrument_key=u_key,
+                        unit='minutes',
+                        interval='1',
+                        to_date=target_date,
+                        from_date=target_date
+                    )
 
                     if response and hasattr(response, 'data') and hasattr(response.data, 'candles'):
                         candles = response.data.candles
                         if not candles: continue
 
-                        sorted_candles = sorted(candles, key=lambda x: x[0], reverse=True)
-                        last_candle = sorted_candles[0]
+                        # Use the last candle of the day for the test
+                        last_candle = candles[-1]
+                        timestamp, op, hi, lo, ltp, vol, *_ = last_candle
 
-                        ltp = float(last_candle[4]) # Close
-                        op = float(last_candle[1])
-                        hi = float(last_candle[2])
-                        lo = float(last_candle[3])
-                        vol = int(last_candle[5])
-
-                        # Create Candle Packet
                         c_data = {
-                            "symbol": sym, "timestamp": ts,
+                            "symbol": sym,
+                            "timestamp": ts,
                             "1m": {
-                                "open": op, "high": hi, "low": lo, "close": ltp, "volume": vol,
+                                "open": float(op),
+                                "high": float(hi),
+                                "low": float(lo),
+                                "close": float(ltp),
+                                "volume": int(vol),
                             }
                         }
                         upstox_candles.append(c_data)
 
                 except Exception as inner_e:
-                     # print(f"[UPSTOX INNER ERROR] {sym}: {inner_e}")
+                     print(f"[UPSTOX INNER ERROR] {sym}: {inner_e}")
                      continue
 
             if upstox_candles:
-                 print(f"[UPSTOX PRIMARY] Recovered {len(upstox_candles)} symbols.")
+                 print(f"[UPSTOX PRIMARY] Recovered {len(upstox_candles)} symbols for {target_date}.")
             return upstox_candles
 
         except Exception as e:
