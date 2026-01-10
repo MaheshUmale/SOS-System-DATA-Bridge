@@ -1,9 +1,26 @@
 # SOS-System-DATA-Bridge
 python data bridge for Scalping-Orchestration-System-SOS-
 
+## Running Locally
+
+To run the Data Bridge locally, follow these steps:
+
+1.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+2.  **Configure the Upstox API key:**
+    Create a `config.py` file in the root of the project and add the following line, replacing `"YOUR_ACCESS_TOKEN"` with your actual Upstox API access token:
+    ```python
+    ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
+    ```
+3.  **Run the script:**
+    ```bash
+    python tv_data_bridge.py
+    ```
+    The Data Bridge will start and attempt to connect to the Core Engine on `ws://localhost:8765`.
 
 Extend the existing logic to enhance:
-
 
 This expanded TRD provides an exhaustive technical breakdown of the **Scalping Orchestration System (SOS)**. It incorporates your specific requirements for **TradingView Screener integration**, **Trendlyne SmartOptions backfill**, and direct **NSE Data** processing.
 
@@ -13,10 +30,10 @@ This expanded TRD provides an exhaustive technical breakdown of the **Scalping O
 
 Instead of brute-force fetching data for 5000+ stocks, we use a **Funnel Architecture**.
 
-1. **Level 1 (The Funnel):** Python Bridge runs a continuous `TradingView-Screener` query.
-2. **Level 2 (The Trigger):** When a stock hits specific "In-Play" criteria (e.g., `RVOL > 2.0` and `ADX > 25`), it is promoted to the **Active Watchlist**.
-3. **Level 3 (The Deep Dive):** For Active Watchlist symbols, the Bridge immediately initiates high-speed fetches from **Upstox** (Candles) and **SmartOptions** (OI Context).
-4. **Level 4 (The Execution):** Normalized data is pushed to the **Java LMAX Disruptor** for sub-millisecond signal processing.
+1.  **Level 1 (The Funnel):** Python Bridge runs a continuous `TradingView-Screener` query.
+2.  **Level 2 (The Trigger):** When a stock hits specific "In-Play" criteria (e.g., `RVOL > 2.0` and `ADX > 25`), it is promoted to the **Active Watchlist**.
+3.  **Level 3 (The Deep Dive):** For Active Watchlist symbols, the Bridge immediately initiates high-speed fetches from **Upstox** (Candles) and **SmartOptions** (OI Context).
+4.  **Level 4 (The Execution):** Normalized data is pushed to the **Java LMAX Disruptor** for sub-millisecond signal processing.
 
 ---
 
@@ -26,24 +43,22 @@ Instead of brute-force fetching data for 5000+ stocks, we use a **Funnel Archite
 
 Using the `tradingview-screener` library, we define "Global Filters" to identify stocks in play.
 
-* **Fields Used:** `relative_volume_10d_calc` (RVOL), `change_from_open`, `ADX`, `ATR`, and `MACD.macd|5` (5-min MACD).
-* **Logic:** * Query runs every 10–30 seconds.
-* Example Filter: `(Query().where(col('relative_volume_10d_calc') > 2, col('change') > 1).get_scanner_data())`.
-* **Result:** A list of symbols that are "active." This list is passed to the `DataOrchestrator`.
-
-
+*   **Fields Used:** `relative_volume_10d_calc` (RVOL), `change_from_open`, `ADX`, `ATR`, and `MACD.macd|5` (5-min MACD).
+*   **Logic:** * Query runs every 10–30 seconds.
+*   Example Filter: `(Query().where(col('relative_volume_10d_calc') > 2, col('change') > 1).get_scanner_data())`.
+*   **Result:** A list of symbols that are "active." This list is passed to the `DataOrchestrator`.
 
 ### **B. Trendlyne SmartOptions Integration (`smart_options_client.py`)**
 
 This service handles the historical context for Options.
 
-* **Feature:** Backfill historical OI, Max Pain, and Put-Call Ratio (PCR) from Trendlyne's SmartOptions endpoint.
-* **Usage:** When the Java Engine restarts, it calls this service to fetch the "Morning State" (9:15 AM to current time) of the Option Chain to reconstruct "OI Walls."
+*   **Feature:** Backfill historical OI, Max Pain, and Put-Call Ratio (PCR) from Trendlyne's SmartOptions endpoint.
+*   **Usage:** When the Java Engine restarts, it calls this service to fetch the "Morning State" (9:15 AM to current time) of the Option Chain to reconstruct "OI Walls."
 
 ### **C. Direct NSE & Upstox Ingestion (`live_feed_manager.py`)**
 
-* **Index Data (NSE):** Direct JSON fetch for NIFTY/BANKNIFTY PCR and Market Breadth (Adv/Dec).
-* **Stock Data (Upstox):** WebSocket-based candle snapshots for "Active Watchlist" stocks only.
+*   **Index Data (NSE):** Direct JSON fetch for NIFTY/BANKNIFTY PCR and Market Breadth (Adv/Dec).
+*   **Stock Data (Upstox):** WebSocket-based candle snapshots for "Active Watchlist" stocks only.
 
 ---
 
@@ -87,8 +102,8 @@ Used for engine recovery.
 
 We use a **Split-Database Strategy** to prevent the "Heavy File" problem.
 
-1. **`sos_master_data.db`**: Stores static data (Symbol tokens, instrument keys).
-2. **`sos_timeseries_2026_01.db`**: Monthly partitioned files for price and OI data.
+1.  **`sos_master_data.db`**: Stores static data (Symbol tokens, instrument keys).
+2.  **`sos_timeseries_2026_01.db`**: Monthly partitioned files for price and OI data.
 
 ### **Table Detail: `market_depth_history**`
 
@@ -106,16 +121,13 @@ We use a **Split-Database Strategy** to prevent the "Heavy File" problem.
 
 The Java Engine processes the normalized feed through three specialized handlers.
 
-1. **Context Handler:** Updates the `GlobalMarketMood` (The 7 States) using the `pcr` and `adv_dec_ratio` from the contract.
-2. **Pattern Matcher:** * If `SCREENER_ALERT` adds "RELIANCE", the engine instantiates a new `PatternStateMachine` for it.
-* If `MARKET_UPDATE` comes in, it evaluates the JSON-based steps (e.g., "Was there a Volume Spike > 2.0?").
+1.  **Context Handler:** Updates the `GlobalMarketMood` (The 7 States) using the `pcr` and `adv_dec_ratio` from the contract.
+2.  **Pattern Matcher:** * If `SCREENER_ALERT` adds "RELIANCE", the engine instantiates a new `PatternStateMachine` for it.
+*   If `MARKET_UPDATE` comes in, it evaluates the JSON-based steps (e.g., "Was there a Volume Spike > 2.0?").
 
-
-3. **Order Orchestrator:**
-* Vetoes the trade if `Regime == SIDEWAYS`.
-* Dispatches to **Upstox API** using the `instrument_key` mapping provided in the Bridge's initial sync.
-
-
+3.  **Order Orchestrator:**
+*   Vetoes the trade if `Regime == SIDEWAYS`.
+*   Dispatches to **Upstox API** using the `instrument_key` mapping provided in the Bridge's initial sync.
 
 ---
 
@@ -130,5 +142,3 @@ The Java Engine processes the normalized feed through three specialized handlers
 | **Recovery** | Mandatory `BACKFILL_DATA` fetch from Trendlyne on startup. |
 
 This refined model ensures that the **Python Bridge** does all the "heavy lifting" (Screening, Sentiment, Historical Buffering), allowing the **Java Engine** to remain a lean, ultra-fast execution machine.
-
- 
