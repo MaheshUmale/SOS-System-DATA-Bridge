@@ -10,7 +10,8 @@ services:
     networks:
       - sos-network
     depends_on:
-      - core-engine
+      core-engine:
+        condition: service_healthy
 
   core-engine:
     build:
@@ -21,6 +22,12 @@ services:
       - "8765:8765"
     networks:
       - sos-network
+    healthcheck:
+      test: ["CMD", "java", "-cp", "/app/sos-engine.jar", "com.trading.hf.HealthCheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 networks:
   sos-network:
