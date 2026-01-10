@@ -1,1 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+
+# Databases
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# IDEs
+.idea/
+.vscode/
+
+# Maven
+target/
+
+# Other
+*.json.gz
 config.py

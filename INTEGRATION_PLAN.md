@@ -33,8 +33,8 @@
 ## Phase 2: Development & Iterative Testing (Sandbox)
 
 **A. Technical Checklists:**
-1.  **Implement the WebSocket client in the Data Bridge:** The `tv_data_bridge.py` script will be updated to connect to the Core Engine's WebSocket server.
-2.  **Implement the WebSocket server in the Core Engine:** The Java application will be updated to accept WebSocket connections from the Data Bridge.
+1.  **Implement the WebSocket server in the Data Bridge:** The `tv_data_bridge.py` script will be updated to listen for connections from the Core Engine.
+2.  **Implement the WebSocket client in the Core Engine:** The Java application will be updated to connect to the Data Bridge's WebSocket server.
 3.  **Implement JSON serialization/deserialization:** Both modules will implement the necessary logic to serialize and deserialize the JSON messages defined in the `Contract.md`.
 4.  **Conduct iterative integration testing:** As features are developed, they will be tested in the sandbox environment to ensure the end-to-end flow is working as expected.
 
