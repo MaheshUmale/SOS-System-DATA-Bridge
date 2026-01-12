@@ -115,31 +115,6 @@ class SOSDataBridgeServer:
         self.connected_clients.difference_update(disconnected_clients)
 
 
-    async def publish_sentiment_update(self):
-        """Calculates and broadcasts the `SENTIMENT_UPDATE` message every 30 seconds."""
-        while True:
-            await self.update_pcr_and_breadth()
-            pcr = self.pcr_data.get("NIFTY", 1.0)
-            adv = self.market_breadth.get("advances", 0)
-            dec = self.market_breadth.get("declines", 1)
-            regime = "UNKNOWN"
-            ratio = adv / dec if dec > 0 else adv
-
-            if pcr < 0.8 and ratio > 1.5: regime = "COMPLETE_BULLISH"
-            elif pcr < 0.9 and ratio > 1.2: regime = "BULLISH"
-            elif pcr < 1.0 and ratio > 1.0: regime = "SIDEWAYS_BULLISH"
-            elif pcr > 1.2 and ratio < 0.7: regime = "COMPLETE_BEARISH"
-            elif pcr > 1.1 and ratio < 0.9: regime = "BEARISH"
-            elif pcr > 1.0 and ratio < 1.0: regime = "SIDEWAYS_BEARISH"
-            else: regime = "SIDEWAYS"
-
-            message = {"type": "SENTIMENT_UPDATE", "timestamp": int(time.time() * 1000), "data": {"regime": regime}}
-            await self.send_to_all(message)
-            if self.connected_clients:
-                print(f"[SENTIMENT] Broadcast update: {regime} (PCR: {pcr}, ADV/DEC: {round(ratio, 2)})")
-
-            await asyncio.sleep(30)
-
     async def update_pcr_and_breadth(self):
         """Internal method to fetch latest PCR and Breadth data."""
         # This logic remains unchanged
@@ -164,15 +139,41 @@ class SOSDataBridgeServer:
         except Exception as e:
             print(f"[WARN] PCR update failed: {e}")
 
-    async def publish_candles(self):
-        """Continuously fetches and broadcasts `CANDLE_UPDATE` messages."""
+    def _calculate_sentiment_regime(self):
+        """Calculates the current market regime based on PCR and market breadth."""
+        pcr = self.pcr_data.get("NIFTY", 1.0)
+        adv = self.market_breadth.get("advances", 0)
+        dec = self.market_breadth.get("declines", 1)
+        ratio = adv / dec if dec > 0 else adv
+
+        if pcr < 0.8 and ratio > 1.5: return "COMPLETE_BULLISH"
+        if pcr < 0.9 and ratio > 1.2: return "BULLISH"
+        if pcr < 1.0 and ratio > 1.0: return "SIDEWAYS_BULLISH"
+        if pcr > 1.2 and ratio < 0.7: return "COMPLETE_BEARISH"
+        if pcr > 1.1 and ratio < 0.9: return "BEARISH"
+        if pcr > 1.0 and ratio < 1.0: return "SIDEWAYS_BEARISH"
+        return "SIDEWAYS"
+
+    async def publish_market_updates(self):
+        """
+        Continuously fetches, combines, and broadcasts `MARKET_UPDATE` messages
+        every 10 seconds, conforming to the primary data contract.
+        """
         while True:
+            # 1. Fetch latest sentiment indicators
+            await self.update_pcr_and_breadth()
+            pcr = self.pcr_data.get("NIFTY", 1.0)
+            regime = self._calculate_sentiment_regime()
+
+            # 2. Fetch latest candle data
             all_candles_data = await self.fetch_all_candles()
+
             if all_candles_data:
+                # 3. Construct and send composite message for each symbol
                 for candle_info in all_candles_data:
                     candle_data = candle_info["1m"]
                     message = {
-                        "type": "CANDLE_UPDATE",
+                        "type": "MARKET_UPDATE",
                         "timestamp": candle_info["timestamp"],
                         "data": {
                             "symbol": candle_info["symbol"],
@@ -182,12 +183,18 @@ class SOSDataBridgeServer:
                                 "low": float(candle_data.get("low", 0.0)),
                                 "close": float(candle_data.get("close", 0.0)),
                                 "volume": int(candle_data.get("volume", 0))
+                            },
+                            "sentiment": {
+                                "pcr": pcr,
+                                "regime": regime
                             }
                         }
                     }
                     await self.send_to_all(message)
+
                 if self.connected_clients:
-                    print(f"[CANDLE] Broadcast updates for {len(all_candles_data)} symbols.")
+                    print(f"[MARKET] Broadcast updates for {len(all_candles_data)} symbols.")
+
             await asyncio.sleep(10)
 
     async def fetch_all_candles(self):
@@ -289,8 +296,7 @@ class SOSDataBridgeServer:
         print(f"Starting SOS Data Bridge Server on ws://{self.host}:{self.port}")
 
         # Start data producers as background tasks
-        asyncio.create_task(self.publish_candles())
-        asyncio.create_task(self.publish_sentiment_update())
+        asyncio.create_task(self.publish_market_updates())
         asyncio.create_task(self.publish_option_chain())
 
         # Start the WebSocket server
