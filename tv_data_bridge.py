@@ -81,7 +81,7 @@ class SOSDataBridgeServer:
         self.pcr_data = {"NIFTY": 1.0, "BANKNIFTY": 1.0}
         self.market_breadth = {"advances": 0, "declines": 0}
 
-    async def connection_handler(self, websocket, path):
+    async def connection_handler(self, websocket):
         """Handles a new client connection, managing its lifecycle."""
         print(f"[CONNECTION] Client connected from {websocket.remote_address}. Total clients: {len(self.connected_clients) + 1}")
         self.connected_clients.add(websocket)
@@ -229,7 +229,7 @@ class SOSDataBridgeServer:
             configuration = upstox_client.Configuration()
             configuration.access_token = config.ACCESS_TOKEN
             history_api = upstox_client.HistoryV3Api(upstox_client.ApiClient(configuration))
-            target_date = "2026-01-09"
+            target_date = datetime.now().strftime("%Y-%m-%d")
             ts = int(datetime.strptime(target_date, "%Y-%m-%d").timestamp() * 1000)
             for sym in self.symbols:
                 u_key = SymbolMaster.get_upstox_key(sym)
