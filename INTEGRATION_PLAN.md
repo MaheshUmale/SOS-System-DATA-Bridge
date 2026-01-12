@@ -1,71 +1,130 @@
-# SOS Integration Plan
+# Integration Plan: Data Bridge and Core Engine
+
+This document outlines the step-by-step plan for integrating the Data Bridge (Module A) and the Core Engine (Module B).
+
+**Document Status: DRAFT**
 
 ## Phase 0: Project Kick-off & Alignment
 
-**A. Technical Checklists:**
-1.  **Finalize and distribute the formal `Contract.md`:** This ensures both teams have a single source of truth for the integration. The existing `Contract.md` is well-defined and will be considered the canonical specification.
-2.  **Provision a shared code repository for integration tests:** A dedicated repository will be created to house integration tests and shared documentation, ensuring a clean separation from the individual module repositories.
-3.  **Create a shared documentation space:** A `docs` directory within the integration repository will be used for meeting notes, architectural diagrams, and other project artifacts.
+### A. Collaboration & Communication
 
-**B. Collaboration & Communication:**
-1.  **Schedule a project kick-off meeting:** All stakeholders from both the Data Bridge and Core Engine teams must attend to align on the project goals, timeline, and communication plan.
-2.  **Establish a dedicated Slack channel (`#sos-integration`):** This will be the primary channel for day-to-day communication, questions, and status updates.
-3.  **Define Points of Contact (PoCs):**
-    *   **Module A (Data Bridge):** Lead Developer of the Data Bridge team.
-    *   **Module B (Core Engine):** Lead Developer of the Core Engine team.
-4.  **Set up a recurring weekly sync-up meeting:** This will be a 30-minute meeting to track progress, discuss blockers, and plan the upcoming week's work.
-5.  **Define the "Definition of Done" for the entire project:**
-    *   The integrated system is deployed to a production environment and has been running stable for at least one week with no critical issues.
-    *   All User Acceptance Testing (UAT) test cases have been passed and signed off by the business stakeholders.
-    *   All integration documentation, including test plans and architectural diagrams, has been completed and reviewed.
-    *   The end-to-end latency from the Data Bridge to the Core Engine meets the performance target of < 25ms.
+*   **Points of Contact (PoCs):**
+    *   **Module A (Data Bridge):** To be designated.
+    *   **Module B (Core Engine):** To be designated.
+*   **Communication Channels:**
+    *   **Primary:** A dedicated Slack channel will be established for daily communication and real-time issue resolution.
+    *   **Secondary:** A ticketing system (e.g., Jira, GitHub Issues) will be used to track tasks, bugs, and feature requests.
+*   **Meetings:**
+    *   **Daily Stand-ups:** A 15-minute daily stand-up will be held during the development phase to discuss progress, blockers, and next steps.
+    *   **Weekly Sync:** A weekly meeting will be held with all stakeholders to review progress against the integration plan and address any high-level issues.
+
+### B. Definition of Done
+
+The integration project will be considered "Done" when the following criteria are met:
+
+1.  **Technical Success Criteria:**
+    *   A stable and persistent WebSocket connection is established and maintained between the Data Bridge and the Core Engine.
+    *   The Core Engine successfully receives, parses, and processes `CANDLE_UPDATE` and `SENTIMENT_UPDATE` messages from the Data Bridge without data loss or corruption.
+    *   All automated integration tests pass in the staging environment, covering both happy path and common error scenarios.
+    *   The integrated system runs for a continuous 48-hour period in the staging environment under a simulated production load without critical failures.
+
+2.  **Project Deliverables:**
+    *   All code changes are peer-reviewed, merged, and deployed to the production environment.
+    *   Finalized documentation, including this integration plan and any necessary updates to the module READMEs, is approved.
 
 ## Phase 1: Environment Setup & Interface Definition Review
 
-**A. Technical Checklists:**
-1.  **Set up a shared development and testing environment:** A Docker Compose setup will be created to spin up the Data Bridge and Core Engine in an isolated network, allowing for easy testing and development.
-2.  **Verify network connectivity:** The Docker network will ensure seamless communication between the two services.
-3.  **Review the `Contract.md` in detail:** A dedicated meeting will be held to walk through the `Contract.md` and ensure both teams have a shared understanding of the data structures and communication protocol.
+### A. Technical Checklists
 
-**B. Testing Strategy:**
-1.  **Develop a suite of contract tests:** A set of tests will be written (e.g., using Pact or a similar framework) to validate that the messages sent by the Data Bridge and consumed by the Core Engine adhere to the `Contract.md` specification. These tests will be run as part of the CI/CD pipeline for both modules.
+*   **Connectivity:**
+    *   [ ] Verify that the integration environment server is provisioned and accessible to both teams. A Docker Compose setup is recommended for local development and testing.
+    *   [ ] Confirm that network paths are open, and there are no firewall rules blocking WebSocket traffic on port 8765.
+    *   [ ] Perform a successful `ping` or `telnet` test from the Data Bridge host to the Core Engine host on port 8765.
+
+*   **Data Validation:**
+    *   [ ] Conduct a joint review of the `Contract.md` to ensure both teams have a common understanding of the data schema.
+    *   [ ] Manually construct a sample `CANDLE_UPDATE` JSON object and verify that it can be successfully parsed by the Core Engine.
+    *   [ ] Manually construct a sample `SENTIMENT_UPDATE` JSON object and verify that it can be successfully parsed by the Core Engine.
 
 ## Phase 2: Development & Iterative Testing (Sandbox)
 
+### A. Development Tasks
 **A. Technical Checklists:**
 1.  **Implement the WebSocket server in the Data Bridge:** The `tv_data_bridge.py` script will be updated to listen for connections from the Core Engine.
 2.  **Implement the WebSocket client in the Core Engine:** The Java application will be updated to connect to the Data Bridge's WebSocket server.
 3.  **Implement JSON serialization/deserialization:** Both modules will implement the necessary logic to serialize and deserialize the JSON messages defined in the `Contract.md`.
 4.  **Conduct iterative integration testing:** As features are developed, they will be tested in the sandbox environment to ensure the end-to-end flow is working as expected.
 
-**B. Testing Strategy:**
-1.  **Write unit tests:** Unit tests will be written for the WebSocket communication logic and the data mapping logic in both modules.
-2.  **Write integration tests:** The shared integration repository will contain a suite of integration tests that send various message types from the Data Bridge to the Core Engine and assert that the Core Engine processes them correctly.
+*   **Data Bridge (Module A):**
+    *   [ ] Implement a WebSocket client to connect to the Core Engine at `ws://localhost:8765`.
+    *   [ ] Implement logic to serialize `CANDLE_UPDATE` and `SENTIMENT_UPDATE` data into the JSON format specified in `Contract.md`.
+    *   [ ] Implement error handling and reconnection logic for the WebSocket client.
+*   **Core Engine (Module B):**
+    *   [ ] Implement a WebSocket server to listen for connections on port 8765.
+    *   [ ] Implement logic to deserialize incoming JSON messages into the appropriate Java objects.
+    *   [ ] Implement placeholder logic to process the received data (e.g., logging the data to the console).
+
+### B. Testing Strategy
+
+*   **Unit Tests:**
+    *   **Data Bridge:**
+        *   [ ] Test the WebSocket client's ability to connect, send messages, and handle connection errors gracefully.
+        *   [ ] Test the JSON serialization logic to ensure it produces valid messages according to the `Contract.md`.
+    *   **Core Engine:**
+        *   [ ] Test the WebSocket server's ability to accept connections and receive messages.
+        *   [ ] Test the JSON deserialization logic to ensure it can parse valid messages and reject malformed ones.
+
+*   **Integration Tests:**
+    *   [ ] Develop an automated test suite that sends a sequence of `CANDLE_UPDATE` and `SENTIMENT_UPDATE` messages from the Data Bridge to the Core Engine.
+    *   [ ] Verify that the Core Engine correctly processes the messages in the correct order.
+    *   [ ] Test the system's behavior with a mix of valid and invalid messages.
+
+*   **End-to-End (E2E) Tests:**
+    *   [ ] Create a test that simulates a real-world scenario, such as a live market data feed.
+    *   [ ] Verify that the Core Engine's internal state is updated correctly based on the incoming data.
+
+*   **Performance/Load Testing:**
+    *   [ ] Test the system's ability to handle a high volume of messages per second.
+    *   [ ] Measure the end-to-end latency from the time the Data Bridge sends a message to the time the Core Engine processes it.
 
 ## Phase 3: UAT (User Acceptance Testing) & Staging Deployment
 
-**A. Technical Checklists:**
-1.  **Deploy the integrated system to a staging environment:** A staging environment that mirrors the production setup will be used for UAT.
-2.  **Prepare a UAT test plan:** The test plan will outline the test scenarios, test data, and expected outcomes for UAT.
-3.  **Conduct UAT:** Business users and stakeholders will execute the UAT test plan and provide feedback.
+### A. UAT Plan
 
-**B. Testing Strategy:**
-1.  **Use anonymized production data samples:** A sanitized dataset from the production environment will be used to ensure the system is tested with realistic data.
-2.  **Conduct performance and load testing:** A series of load tests will be run to ensure the integrated system can handle the expected production load and meets the latency requirements.
-
-**C. Risk & Rollback:**
-1.  **Identify common integration risks:**
-    *   **Schema drift:** Changes in the message format in one module without a corresponding update in the other. **Mitigation:** The contract tests will be run on every commit to detect schema drift early.
-    *   **Latency issues:** High network latency between the Data Bridge and Core Engine. **Mitigation:** The services will be deployed in the same network region, and the code will be optimized for performance.
-    *   **Data quality issues:** The data sent by the Data Bridge is incorrect or incomplete. **Mitigation:** The Core Engine will implement robust data validation and error handling to gracefully handle invalid data.
-2.  **Define the rollback procedure:** If the UAT or Go-Live fails, the system will be rolled back to the last known good version. The deployment process will use a blue-green or canary deployment strategy to minimize downtime during a rollback.
+*   **Objective:** To have end-users validate that the integrated system meets their requirements and is ready for production.
+*   **Required Data Sets:**
+    *   A set of anonymized production data samples will be prepared to be used for UAT.
+    *   The data will cover a variety of market conditions, including high and low volatility periods.
+*   **Test Cases:**
+    *   [ ] End-users will be provided with a set of test cases to execute.
+    *   [ ] The test cases will cover the main functionalities of the system, such as receiving and processing market data.
+*   **Feedback:**
+    *   [ ] A feedback form will be provided to UAT participants to report any issues or suggestions.
+    *   [ ] All feedback will be reviewed and prioritized by the project team.
 
 ## Phase 4: Go-Live & Post-Deployment Monitoring
 
-**A. Technical Checklists:**
-1.  **Deploy the integrated system to production:** A phased rollout will be used to deploy the system to production, starting with a small percentage of traffic and gradually increasing it.
-2.  **Set up monitoring and alerting:** Dashboards will be created to monitor the health of the integrated system, including error rates, latency, and resource utilization. Alerts will be configured to notify the team of any critical issues.
-3.  **Establish an on-call rotation:** An on-call rotation will be established to provide 24/7 support for the production system.
+### A. Go-Live Plan
 
-**B. Collaboration & Communication:**
-1.  **Schedule a post-launch review meeting:** A retrospective meeting will be held to discuss what went well, what could be improved, and any lessons learned from the integration project.
+*   **Deployment Schedule:** A maintenance window will be scheduled for the deployment to minimize the impact on users.
+*   **Smoke Tests:** A set of smoke tests will be performed immediately after the deployment to verify that the system is functioning correctly.
+
+### B. Post-Deployment Monitoring
+
+*   **Monitoring:** The system will be closely monitored for any issues or performance degradation.
+*   **On-call Rotation:** An on-call rotation will be established to provide production support.
+
+### C. Risk & Rollback
+
+*   **Risk Identification:**
+    *   **Schema Drift:** Changes in the data schema that are not backward-compatible.
+    *   **Latency Issues:** The system may not be able to handle the production load.
+*   **Mitigation Strategies:**
+    *   **Schema Drift:** Implement schema validation in the Core Engine to reject messages that do not conform to the contract.
+    *   **Latency Issues:** Conduct performance testing to identify and address bottlenecks.
+*   **Rollback Procedure:**
+    *   In the event of a critical failure during Go-Live, the previous versions of the modules will be redeployed from the artifact repository.
+
+## Summary
+
+This integration plan provides a comprehensive framework for the successful integration of the Data Bridge and Core Engine modules. By following the outlined phases, technical checklists, and communication protocols, we can ensure a smooth and efficient integration process.
