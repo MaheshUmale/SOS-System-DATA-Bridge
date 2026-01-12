@@ -11,12 +11,12 @@ Key Features:
 
 Usage:
     from SymbolMaster import MASTER
-    
+
     MASTER.initialize()  # Downloads instrument master (one-time)
-    
+
     # Resolve symbol to Upstox key
     key = MASTER.get_upstox_key("RELIANCE")  # Returns: NSE_EQ|INE002A01018
-    
+
     # Reverse lookup
     symbol = MASTER.get_ticker_from_key(key)  # Returns: RELIANCE
 
@@ -34,6 +34,7 @@ import gzip
 import io
 import pandas as pd
 import os
+import time
 
 class SymbolMaster:
     _instance = None
@@ -49,64 +50,63 @@ class SymbolMaster:
 
     def initialize(self):
         """
-        Downloads and parses the Upstox NSE instrument master.
-        
-        This method is idempotent - subsequent calls are no-ops.
-        Attempts to load from disk cache first if download fails.
-        
+        Downloads and parses the Upstox NSE instrument master with daily caching.
+
+        This method is idempotent. It will only download the master file if the
+        cached version is older than 24 hours or does not exist.
+
         Raises:
-            Exception: If both download and cache load fail
+            Exception: If both download and cache load fail.
         """
         if self._initialized:
             return
-            
+
+        print("[SymbolMaster] Initializing Instrument Keys...")
         cache_file = "upstox_instruments.json.gz"
+        cache_age_seconds = 24 * 60 * 60  # 24 hours
         content = None
-        
-        # 1. Try to Download
-        try:
-            print("[SymbolMaster] Initializing Instrument Keys...")
-            url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
-            response = requests.get(url, timeout=60)
-            response.raise_for_status()
-            content = response.content
-            
-            # Save to cache
-            with open(cache_file, "wb") as f:
-                f.write(content)
-            print(f"  ✓ Downloaded and cached to {cache_file}")
-            
-        except Exception as e:
-            print(f"  [WARN] Download failed: {e}")
-            # 2. Fallback to Disk Cache
-            if os.path.exists(cache_file):
-                print(f"  [INFO] Loading from disk cache: {cache_file}")
-                with open(cache_file, "rb") as f:
-                    content = f.read()
-            else:
-                print("  ✗ No disk cache available.")
-                raise e
-        
-        # 3. Parse content
+
+        # 1. Check Cache Validity
+        if os.path.exists(cache_file) and (time.time() - os.path.getmtime(cache_file)) < cache_age_seconds:
+            print(f"  [INFO] Loading from fresh disk cache: {cache_file}")
+            with open(cache_file, "rb") as f:
+                content = f.read()
+        else:
+            # 2. Download if Cache is Stale or Missing
+            try:
+                print("  [INFO] Cache is stale or missing. Downloading from Upstox...")
+                url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+                response = requests.get(url, timeout=60)
+                response.raise_for_status()
+                content = response.content
+
+                # Save to cache
+                with open(cache_file, "wb") as f:
+                    f.write(content)
+                print(f"  ✓ Downloaded and cached to {cache_file}")
+
+            except Exception as e:
+                print(f"  [WARN] Download failed: {e}")
+                # Fallback to stale cache if it exists
+                if os.path.exists(cache_file):
+                    print(f"  [INFO] Using stale disk cache as fallback: {cache_file}")
+                    with open(cache_file, "rb") as f:
+                        content = f.read()
+                else:
+                    print("  ✗ No disk cache available.")
+                    raise e
+
+        if not content:
+            raise Exception("Failed to load instrument master content.")
+
+        # 3. Parse content (same as before)
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(content)) as f:
                 df = pd.read_json(f)
-            
-            # 2. Filter for Equities and Indices
-            # Equities have lot_size=1 usually, Indices have specific names
-            # Simplify: Just map by Trading Symbol -> Instrument Key
-            
-            # Create Fast Lookup
-            # "RELIANCE" -> "NSE_EQ|INE..."
-            # "NIFTY 50" -> "NSE_INDEX|Nifty 50"
-            
-            # Optimization: Filter for Equities and Indices using 'segment'
-            # Segments found: 'NSE_EQ', 'NSE_INDEX'
+
             df_filtered = df[df['segment'].isin(['NSE_EQ', 'NSE_INDEX'])].copy()
-            
+
             for _, row in df_filtered.iterrows():
-                # Clean name: "Nifty 50" -> "NIFTY", "RELIANCE" -> "RELIANCE"
-                # Some might be "RELIANCE-EQ" or similar, usually trading_symbol is clean for equities
                 name = row['trading_symbol'].upper()
                 key = row['instrument_key']
                 segment = row['segment']
@@ -114,8 +114,6 @@ class SymbolMaster:
                 self._mappings[name] = key
                 self._reverse_mappings[key] = (name, segment)
 
-                # Special Handling for Indices (trading_symbol might be specific)
-                # For NSE_INDEX, name is often "Nifty 50", trading_symbol "Nifty 50"
                 if segment == 'NSE_INDEX':
                     if row['name'] == "Nifty 50" or row['trading_symbol'] == "Nifty 50":
                         self._mappings["NIFTY"] = key
@@ -124,20 +122,21 @@ class SymbolMaster:
 
             print(f"[SymbolMaster] Loaded {len(self._mappings)} keys.")
             self._initialized = True
-            
+
         except Exception as e:
-            print(f"[SymbolMaster] Initialization Failed: {e}")
+            print(f"[SymbolMaster] Parsing Failed: {e}")
+            raise e
 
     def get_upstox_key(self, symbol):
         """
         Resolves a trading symbol to its Upstox instrument key.
-        
+
         Args:
             symbol (str): Trading symbol (e.g., 'RELIANCE', 'NIFTY', 'SBIN')
-            
+
         Returns:
             str: Upstox instrument key (e.g., 'NSE_EQ|INE002A01018') or None if not found
-            
+
         Example:
             >>> MASTER.get_upstox_key('RELIANCE')
             'NSE_EQ|INE002A01018'
@@ -159,13 +158,13 @@ class SymbolMaster:
     def get_ticker_from_key(self, key):
         """
         Reverse lookup: Upstox instrument key to trading symbol.
-        
+
         Args:
             key (str): Upstox instrument key (e.g., 'NSE_EQ|INE002A01018')
-            
+
         Returns:
             str: Trading symbol (unified for indices) or the original key if not found
-            
+
         Example:
             >>> MASTER.get_ticker_from_key('NSE_INDEX|Nifty 50')
             'NSE|INDEX|NIFTY'
@@ -175,7 +174,7 @@ class SymbolMaster:
         if key in self._reverse_mappings:
             name, segment = self._reverse_mappings[key]
             if segment == 'NSE_INDEX':
-                if name == "NIFTY 50":
+                if name == "Nifty 50":
                     return "NSE|INDEX|NIFTY"
                 if name == "NIFTY BANK":
                     return "NSE|INDEX|BANKNIFTY"
