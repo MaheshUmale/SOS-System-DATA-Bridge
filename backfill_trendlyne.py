@@ -27,173 +27,89 @@ except ImportError:
 # 1. DATABASE LAYER (SQLite)
 # ==========================================================================
 class OptionDatabase:
-    def __init__(self, master_db_path="sos_master_data.db"):
-        self.master_db_path = master_db_path
-        self._init_master_db()
+    def __init__(self, db_path="sos_unified.db"):
+        self.db_path = db_path
+        # No need for separate master/timeseries DBs, so init methods are simplified.
 
-    def _get_timeseries_db_path(self):
-        """Returns the DB path for the current month, e.g., 'sos_timeseries_2023_12.db'"""
-        return f"sos_timeseries_{datetime.now().strftime('%Y_%m')}.db"
-
-    def _get_connection(self, db_path):
-        """Establishes a connection and enables WAL mode."""
-        conn = sqlite3.connect(db_path, timeout=10)
+    def _get_connection(self):
+        """Establishes a connection to the unified DB and enables WAL mode."""
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL;")
         return conn
 
-    def _init_master_db(self):
-        conn = self._get_connection(self.master_db_path)
-        cursor = conn.cursor()
-        # This table is for static, slowly changing data
-        cursor.execute('''CREATE TABLE IF NOT EXISTS pcr_history (
-                            symbol TEXT,
-                            date TEXT,
-                            pcr REAL,
-                            call_oi INTEGER,
-                            put_oi INTEGER,
-                            PRIMARY KEY (symbol, date)
-                          )''')
-        conn.commit()
-        conn.close()
-
-    def _init_timeseries_db(self, db_path):
-        """Initializes tables in the monthly timeseries database."""
-        conn = self._get_connection(db_path)
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS option_aggregates (
-                            symbol TEXT, date TEXT, timestamp TEXT, expiry TEXT,
-                            call_oi INTEGER, put_oi INTEGER, pcr REAL,
-                            PRIMARY KEY (symbol, date, timestamp)
-                          )''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS option_chain_details (
-                            symbol TEXT, date TEXT, timestamp TEXT, strike REAL,
-                            call_oi INTEGER, put_oi INTEGER, call_oi_chg INTEGER, put_oi_chg INTEGER,
-                            PRIMARY KEY (symbol, date, timestamp, strike)
-                          )''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS market_depth_history (
-                            timestamp INTEGER, symbol TEXT, rvol REAL, pcr REAL, adv_dec_ratio REAL,
-                            PRIMARY KEY (timestamp, symbol)
-                          )''')
-        conn.commit()
-        conn.close()
-
-    def save_snapshot(self, symbol, trading_date, timestamp, expiry, aggregates, details):
-        db_path = self._get_timeseries_db_path()
-        self._init_timeseries_db(db_path) # Ensures table exists
-        conn = self._get_connection(db_path)
+    def save_snapshot(self, symbol, full_datetime, expiry, aggregates, details):
+        """
+        Saves a full option chain snapshot to the unified database.
+        Timestamps are now Unix timestamps for consistency.
+        """
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             # Save Aggregates
             cursor.execute("""INSERT OR REPLACE INTO option_aggregates
-                              VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                           (symbol, trading_date, timestamp, expiry,
+                              (symbol, timestamp, expiry, total_call_oi, total_put_oi, pcr)
+                              VALUES (?, ?, ?, ?, ?, ?)""",
+                           (symbol, int(full_datetime.timestamp()), expiry,
                             aggregates['call_oi'], aggregates['put_oi'], aggregates['pcr']))
 
-            # Save Details
-            for strike, d in details.items():
-                cursor.execute("""INSERT OR REPLACE INTO option_chain_details
-                                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                               (symbol, trading_date, timestamp, float(strike),
-                                d['call_oi'], d['put_oi'], d['call_oi_chg'], d['put_oi_chg']))
+            # Save Details (per-strike data)
+            # Use a list of tuples for executemany for efficiency
+            details_to_insert = [
+                (symbol, int(full_datetime.timestamp()), float(strike),
+                 d['call_oi'], d['put_oi'], d['call_oi_chg'], d['put_oi_chg'])
+                for strike, d in details.items()
+            ]
+
+            if details_to_insert:
+                cursor.executemany("""INSERT OR REPLACE INTO option_chain_details
+                                      (symbol, timestamp, strike, call_oi, put_oi, call_oi_chg, put_oi_chg)
+                                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                                   details_to_insert)
 
             conn.commit()
         except Exception as e:
-            print(f"[DB ERROR] {e}")
+            print(f"[DB ERROR] Failed to save snapshot for {symbol} at {full_datetime}: {e}")
             conn.rollback()
         finally:
             conn.close()
-
-    def save_market_depth(self, ts, symbol, rvol, pcr, ratio):
-        db_path = self._get_timeseries_db_path()
-        self._init_timeseries_db(db_path)
-        conn = self._get_connection(db_path)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("INSERT OR REPLACE INTO market_depth_history VALUES (?, ?, ?, ?, ?)",
-                           (ts, symbol, rvol, pcr, ratio))
-            conn.commit()
-        except Exception as e:
-            print(f"[DB DEPTH ERROR] {e}")
-            conn.rollback()
-        finally:
-            conn.close()
-
-    def save_breadth(self, trading_date, timestamp, data):
-        # This data is transient and might not need historical persistence in this context
-        # If required, it should go into the timeseries DB.
-        # For now, this can be a no-op or write to a log.
-        pass
-
-    def get_latest_breadth(self):
-        # This would require querying the latest timeseries DB, which is complex.
-        # Market breadth is better handled live.
-        return None
-
-    def get_latest_aggregates(self, symbol):
-        db_path = self._get_timeseries_db_path()
-        if not os.path.exists(db_path): return None
-        conn = self._get_connection(db_path)
-        cursor = conn.cursor()
-        cursor.execute("""SELECT * FROM option_aggregates
-                          WHERE symbol=?
-                          ORDER BY date DESC, timestamp DESC LIMIT 1""", (symbol,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            return {
-                'symbol': row[0],
-                'date': row[1],
-                'timestamp': row[2],
-                'expiry': row[3],
-                'call_oi': row[4],
-                'put_oi': row[5],
-                'pcr': row[6]
-            }
-        return None
 
     def get_latest_chain(self, symbol):
-        db_path = self._get_timeseries_db_path()
-        if not os.path.exists(db_path): return []
-        conn = self._get_connection(db_path)
-        cursor = conn.cursor()
-        cursor.execute("""SELECT date, timestamp FROM option_chain_details
-                          WHERE symbol=?
-                          ORDER BY date DESC, timestamp DESC LIMIT 1""", (symbol,))
-        last = cursor.fetchone()
-        if not last:
-            conn.close()
-            return []
-
-        d, ts = last
-        cursor.execute("""SELECT * FROM option_chain_details
-                          WHERE symbol=? AND date=? AND timestamp=?""", (symbol, d, ts))
-        rows = cursor.fetchall()
-        conn.close()
-
-        return [{
-            'strike': r[3], 'call_oi': r[4], 'put_oi': r[5],
-            'call_oi_chg': r[6], 'put_oi_chg': r[7]
-        } for r in rows]
-
-    def save_daily_stats(self, symbol, trading_date, pcr, call_oi, put_oi):
-        conn = self._get_connection(self.master_db_path)
+        """
+        Retrieves the most recent, full option chain for a symbol from the unified DB.
+        """
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("INSERT OR REPLACE INTO pcr_history VALUES (?, ?, ?, ?, ?)",
-                           (symbol, trading_date, pcr, call_oi, put_oi))
-            conn.commit()
+            # Find the timestamp of the latest entry for the given symbol
+            cursor.execute("""SELECT timestamp FROM option_chain_details
+                              WHERE symbol=?
+                              ORDER BY timestamp DESC LIMIT 1""", (symbol,))
+            last_ts_row = cursor.fetchone()
+            if not last_ts_row:
+                return []
+
+            last_ts = last_ts_row[0]
+
+            # Fetch all strike data for that latest timestamp
+            cursor.execute("""SELECT strike, call_oi, put_oi, call_oi_chg, put_oi_chg
+                              FROM option_chain_details
+                              WHERE symbol=? AND timestamp=?""", (symbol, last_ts))
+            rows = cursor.fetchall()
+
+            # Format into the expected list of dictionaries
+            return [{
+                'strike': r[0], 'call_oi': r[1], 'put_oi': r[2],
+                'call_oi_chg': r[3], 'put_oi_chg': r[4]
+            } for r in rows]
         except Exception as e:
-            print(f"[DB STATS ERROR] {e}")
+            print(f"[DB READ ERROR] Could not get latest chain for {symbol}: {e}")
+            return []
         finally:
             conn.close()
 
-    def get_pcr_history(self, symbol, days=30):
-        conn = self._get_connection(self.master_db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM pcr_history WHERE symbol=? ORDER BY date DESC LIMIT ?", (symbol, days))
-        rows = cursor.fetchall()
-        conn.close()
-        return rows
+    # Note: The other methods like save_market_depth, save_breadth, etc. have been removed
+    # as they are either not used or will be handled by the new sentiment/market data tables.
+    # The pcr_history can be derived from the option_aggregates table if needed.
 
 # Keep a cache to avoid repeated API calls
 STOCK_ID_CACHE = {}
@@ -229,15 +145,17 @@ def get_stock_id_for_symbol(symbol):
         print(f"[ERROR] Stock Lookup {symbol}: {e}")
         return None
 
-def backfill_from_trendlyne(symbol, stock_id, expiry_date_str, timestamp_snapshot):
-    """Fetch and save historical OI data from Trendlyne for a specific timestamp snapshot"""
-
+def backfill_from_trendlyne(symbol, stock_id, expiry_date_str, time_snapshot_str):
+    """
+    Fetch and save historical OI data from Trendlyne for a specific timestamp snapshot.
+    This now works with a combined datetime object for accurate DB insertion.
+    """
     url = f"https://smartoptions.trendlyne.com/phoenix/api/live-oi-data/"
     params = {
         'stockId': stock_id,
         'expDateList': expiry_date_str,
         'minTime': "09:15",
-        'maxTime': timestamp_snapshot
+        'maxTime': time_snapshot_str
     }
 
     try:
@@ -245,18 +163,20 @@ def backfill_from_trendlyne(symbol, stock_id, expiry_date_str, timestamp_snapsho
         response.raise_for_status()
         data = response.json()
 
-        if data['head']['status'] != '0':
+        if data.get('head', {}).get('status') != '0':
             return False
 
-        body = data['body']
+        body = data.get('body', {})
         oi_data = body.get('oiData', {})
         input_data = body.get('inputData', {})
 
-        trading_date = input_data.get('tradingDate', date.today().strftime("%Y-%m-%d"))
+        # Construct a full datetime object for the snapshot
+        trading_date_str = input_data.get('tradingDate', date.today().strftime("%Y-%m-%d"))
+        snapshot_datetime = datetime.strptime(f"{trading_date_str} {time_snapshot_str}", "%Y-%m-%d %H:%M")
+
         expiry = input_data.get('expDateList', [expiry_date_str])[0]
 
-        total_call_oi = 0
-        total_put_oi = 0
+        total_call_oi, total_put_oi = 0, 0
         details = {}
 
         for strike_str, strike_data in oi_data.items():
@@ -266,141 +186,89 @@ def backfill_from_trendlyne(symbol, stock_id, expiry_date_str, timestamp_snapsho
             total_put_oi += p_oi
 
             details[strike_str] = {
-                'call_oi': c_oi,
-                'put_oi': p_oi,
+                'call_oi': c_oi, 'put_oi': p_oi,
                 'call_oi_chg': int(strike_data.get('callOiChange', 0)),
                 'put_oi_chg': int(strike_data.get('putOiChange', 0))
             }
 
+        if total_call_oi == 0 and total_put_oi == 0:
+            return False # No data to save
+
         pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
+        aggregates = {'call_oi': total_call_oi, 'put_oi': total_put_oi, 'pcr': pcr}
 
-        aggregates = {
-            'call_oi': total_call_oi,
-            'put_oi': total_put_oi,
-            'pcr': pcr
-        }
-
-        DB.save_snapshot(symbol, trading_date, timestamp_snapshot, expiry, aggregates, details)
+        DB.save_snapshot(symbol, snapshot_datetime, expiry, aggregates, details)
         return True
 
     except Exception as e:
-        print(f"[ERROR] Fetch {symbol} @ {timestamp_snapshot}: {e}")
+        print(f"[ERROR] Fetch {symbol} @ {time_snapshot_str}: {e}")
         return False
 
 def fetch_live_snapshot_upstox(symbol):
     """
-    Fetches live option chain from Upstox Primary API and saves to DB.
-    Returns: list of dicts (chain details) or None if failed.
+    Fetches live option chain from Upstox Primary API and saves to the unified DB.
+    Returns the latest chain details from the DB upon success.
     """
     if not UPSTOX_AVAILABLE or not hasattr(config, 'ACCESS_TOKEN'):
         return None
 
     try:
-        # 1. Resolve Instrument Key (e.g. NSE_INDEX|Nifty 50)
-        # SymbolMaster usually returns NSE_INDEX|Nifty 50 for NIFTY
-        # But we need to be sure about the underlying key expected by Option Chain API
-        # The API expects 'NSE_INDEX|Nifty 50' or 'NSE_INDEX|Nifty Bank'
-
-        instrument_key = None
-        if symbol == "NIFTY": instrument_key = "NSE_INDEX|Nifty 50"
-        elif symbol == "BANKNIFTY": instrument_key = "NSE_INDEX|Nifty Bank"
-        else:
-            # For stocks, we need the underlying key
-            # Attempt to use SymbolMaster but might need verifying format
-             k = SymbolMaster.get_upstox_key(symbol)
-             if k: instrument_key = k
-
+        instrument_key = {"NIFTY": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank"}.get(symbol)
         if not instrument_key:
-            return None
+            instrument_key = SymbolMaster.get_upstox_key(symbol)
 
-        # 2. Get Expiry
-        # We need a valid expiry date.
-        # Upstox API requires 'expiry_date' parameter.
-        # Check cache or fetch instrument details?
-        # Creating a helper to get expiry is complex without downloading master again or using metadata API.
-        # Fallback: Use the cached expiry from Trendlyne logic if available, or try to derive it?
-        # Actually, for the new `get_put_call_option_chain`, expiry IS required.
+        if not instrument_key: return None
 
-        # Strategy: Use Trendlyne expiry logic (already robust) to get the date string
-        # Then feed it to Upstox.
         expiry = EXPIRY_CACHE.get(symbol)
         if not expiry:
-             stock_id = get_stock_id_for_symbol(symbol)
-             if stock_id:
-                 # Quick fetch of expiry via Trendlyne API (lightweight)
-                 try:
-                     expiry_url = f"https://smartoptions.trendlyne.com/phoenix/api/fno/get-expiry-dates/?mtype=options&stock_id={stock_id}"
-                     resp = requests.get(expiry_url, timeout=5)
-                     ex_list = resp.json().get('body', {}).get('expiryDates', [])
-                     if ex_list:
-                         expiry = ex_list[0]
-                         EXPIRY_CACHE[symbol] = expiry
-                 except: pass
+            stock_id = get_stock_id_for_symbol(symbol)
+            if stock_id:
+                try:
+                    expiry_url = f"https://smartoptions.trendlyne.com/phoenix/api/fno/get-expiry-dates/?mtype=options&stock_id={stock_id}"
+                    resp = requests.get(expiry_url, timeout=5)
+                    ex_list = resp.json().get('body', {}).get('expiryDates', [])
+                    if ex_list:
+                        expiry = ex_list[0]
+                        EXPIRY_CACHE[symbol] = expiry
+                except Exception: pass
 
-        if not expiry:
-            return None
+        if not expiry: return None
 
-        # 3. Call Upstox API
         configuration = upstox_client.Configuration()
         configuration.access_token = config.ACCESS_TOKEN
         api_client = upstox_client.ApiClient(configuration)
         api_instance = upstox_client.OptionsApi(api_client)
-
         response = api_instance.get_put_call_option_chain(instrument_key, expiry)
 
-        if not response or not response.data:
-            return None
+        if not response or not response.data: return None
 
-        # 4. Parse Response
-        chain_data = response.data # List of objects
-
-        total_call_oi = 0
-        total_put_oi = 0
+        total_call_oi, total_put_oi = 0, 0
         details = {}
-        ts = datetime.now().strftime("%H:%M")
-        trading_date = datetime.now().strftime("%Y-%m-%d")
+        snapshot_datetime = datetime.now()
 
-        for item in chain_data:
+        for item in response.data:
             strike = float(item.strike_price)
-
-            # Call Data
-            ce = item.call_options.market_data
-            pe = item.put_options.market_data
+            ce, pe = item.call_options.market_data, item.put_options.market_data
 
             c_oi = int(ce.oi) if ce and ce.oi else 0
             p_oi = int(pe.oi) if pe and pe.oi else 0
-
-            # OI Change not directly in market_data usually?
-            # 'prev_oi' is available. chg = oi - prev_oi
             c_prev = int(ce.prev_oi) if ce and ce.prev_oi else 0
             p_prev = int(pe.prev_oi) if pe and pe.prev_oi else 0
 
-            c_chg = c_oi - c_prev
-            p_chg = p_oi - p_prev
-
             total_call_oi += c_oi
             total_put_oi += p_oi
-
             details[str(strike)] = {
-                'call_oi': c_oi,
-                'put_oi': p_oi,
-                'call_oi_chg': c_chg,
-                'put_oi_chg': p_chg
+                'call_oi': c_oi, 'put_oi': p_oi,
+                'call_oi_chg': c_oi - c_prev,
+                'put_oi_chg': p_oi - p_prev
             }
 
-        if total_call_oi == 0 and total_put_oi == 0:
-            return None
+        if total_call_oi == 0 and total_put_oi == 0: return None
 
         pcr = round(total_put_oi / total_call_oi, 2) if total_call_oi > 0 else 1.0
+        aggregates = {'call_oi': total_call_oi, 'put_oi': total_put_oi, 'pcr': pcr}
 
-        # 5. Save to DB
-        aggregates = {
-            'call_oi': total_call_oi,
-            'put_oi': total_put_oi,
-            'pcr': pcr
-        }
-
-        DB.save_snapshot(symbol, trading_date, ts, expiry, aggregates, details)
+        DB.save_snapshot(symbol, snapshot_datetime, expiry, aggregates, details)
         return DB.get_latest_chain(symbol)
 
     except Exception as e:
@@ -472,40 +340,34 @@ def generate_time_intervals(start_time="09:15", end_time="15:30", interval_minut
         current += timedelta(minutes=interval_minutes)
     return times
 
-def run_backfill(symbols_list=None, full_run=False):
+def run_backfill(symbols_list=None, test_time=None):
     if not symbols_list:
         symbols_list = ["NIFTY", "BANKNIFTY", "RELIANCE", "SBIN", "HDFCBANK"]
 
     print("=" * 60)
-    if full_run:
-        print("STARTING TRENDLYNE BACKFILL (FULL DAY)")
-    else:
-        print("STARTING TRENDLYNE BACKFILL (LAST 15 MINS)")
+    print("STARTING TRENDLYNE BACKFILL (LAST 15 MINS)")
     print("=" * 60)
 
-    now = datetime.now()
+    now = test_time if test_time else datetime.now()
+
     market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
 
-    start_time_str = "09:15"
-
+    end_time = now
     if now < market_open:
-        end_time_str = "15:30"
-    elif now > now.replace(hour=15, minute=30, second=0, microsecond=0):
-        end_time_str = "15:30"
-    else:
-        end_time_str = now.strftime("%H:%M")
+        # If run before market open, don't fetch anything.
+        print("Market is not open yet. No backfill will be performed.")
+        return
+    if now > market_close:
+        end_time = market_close
 
-    if not full_run:
-        end_dt = datetime.strptime(end_time_str, "%H:%M")
-        start_dt = end_dt - timedelta(minutes=15)
-        start_time_str = start_dt.strftime("%H:%M")
+    start_time = end_time - timedelta(minutes=15)
+    if start_time < market_open:
+        start_time = market_open
 
-        # Ensure we don't request data from before market open
-        if start_dt.time() < market_open.time():
-            start_time_str = "09:15"
-
-    time_slots = generate_time_intervals(start_time=start_time_str, end_time=end_time_str)
-    print(f"Time Slots: {len(time_slots)} ({start_time_str} to {end_time_str}) | Symbols: {len(symbols_list)}")
+    time_slots = generate_time_intervals(start_time=start_time.strftime("%H:%M"),
+                                         end_time=end_time.strftime("%H:%M"))
+    print(f"Time Slots: {len(time_slots)} ({start_time.strftime('%H:%M')} to {end_time.strftime('%H:%M')}) | Symbols: {len(symbols_list)}")
 
     for symbol in symbols_list:
         stock_id = get_stock_id_for_symbol(symbol)
@@ -514,7 +376,6 @@ def run_backfill(symbols_list=None, full_run=False):
             continue
 
         try:
-            # Fetch Expiry
             expiry_url = f"https://smartoptions.trendlyne.com/phoenix/api/fno/get-expiry-dates/?mtype=options&stock_id={stock_id}"
             resp = requests.get(expiry_url, timeout=10)
             expiry_list = resp.json().get('body', {}).get('expiryDates', [])
@@ -526,23 +387,21 @@ def run_backfill(symbols_list=None, full_run=False):
             print(f"Syncing {symbol} | Expiry: {nearest_expiry}...")
 
             success_count = 0
-            for ts in time_slots:
-                if backfill_from_trendlyne(symbol, stock_id, nearest_expiry, ts):
+            for ts_str in time_slots:
+                if backfill_from_trendlyne(symbol, stock_id, nearest_expiry, ts_str):
                     success_count += 1
-
-                # Sleep briefly to avoid rate limits
-                if success_count % 10 == 0:
-                    time.sleep(0.1)
+                time.sleep(0.1)  # Small delay to be polite to the API
 
             print(f"[OK] {symbol}: Captured {success_count}/{len(time_slots)} points")
         except Exception as e:
-            print(f"[FAIL] {symbol}: {e}")
+            print(f"[FAIL] {symbol}: An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Trendlyne Data Backfill Script")
-    parser.add_argument('--full', action='store_true', help='Perform a full-day backfill instead of the default last 15 minutes.')
+    parser = argparse.ArgumentParser(description="Trendlyne Data Backfill Script for Unified Database")
+    # --full argument is removed as the logic now defaults to a smart 15-min window.
+    # Future arguments like --date could be added for historical backfills.
     args = parser.parse_args()
 
     target_symbols = ["NIFTY", "BANKNIFTY", "RELIANCE"]
-    run_backfill(target_symbols, full_run=args.full)
-    print("\n[DB PATH]:", os.path.abspath("sos_master_data.db"))
+    run_backfill(target_symbols)
+    print("\n[DB PATH]:", os.path.abspath("sos_unified.db"))
