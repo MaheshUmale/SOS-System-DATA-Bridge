@@ -49,7 +49,7 @@ def analyze_log(log_path):
                         signals.append(m.groups()[:5])
             
             if "[EXEC_DATA]" in line:
-                m = re.search(r"Side=(.*?), Symbol=(.*?), Qty=(\d+), Price=([\d\.]+), SL=([\d\.]+), TP=([\d\.]+), Gate=(.*)", line)
+                m = re.search(r"Side=(.*?), Symbol=(.*?), Qty=([\d\.]+), Price=([\d\.]+), SL=([\d\.]+), TP=([\d\.]+), Gate=(.*)", line)
                 if m: executions.append(m.groups())
 
             if "[EXIT_DATA]" in line:
@@ -86,4 +86,6 @@ def analyze_log(log_path):
         print("No trades closed yet.")
 
 if __name__ == "__main__":
-    analyze_log("backtest_java.log")
+    import sys
+    log_file = sys.argv[1] if len(sys.argv) > 1 else "backtest_java.log"
+    analyze_log(log_file)

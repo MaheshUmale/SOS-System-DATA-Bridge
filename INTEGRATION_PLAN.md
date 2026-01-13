@@ -39,7 +39,7 @@ The integration project will be considered "Done" when the following criteria ar
 *   **Connectivity:**
     *   [ ] Verify that the integration environment server is provisioned and accessible to both teams. A Docker Compose setup is recommended for local development and testing.
     *   [ ] Confirm that network paths are open, and there are no firewall rules blocking WebSocket traffic on port 8765.
-    *   [ ] Perform a successful `ping` or `telnet` test from the Data Bridge host to the Core Engine host on port 8765.
+    *   [ ] Perform a successful `ping` or `telnet` test from the Core Engine host (Client) to the Data Bridge host (Server) on port 8765.
 
 *   **Data Validation:**
     *   [ ] Conduct a joint review of the `Contract.md` to ensure both teams have a common understanding of the data schema.
@@ -55,12 +55,12 @@ The integration project will be considered "Done" when the following criteria ar
 3.  **Implement JSON serialization/deserialization:** Both modules will implement the necessary logic to serialize and deserialize the JSON messages defined in the `Contract.md`.
 4.  **Conduct iterative integration testing:** As features are developed, they will be tested in the sandbox environment to ensure the end-to-end flow is working as expected.
 
-*   **Data Bridge (Module A):**
-    *   [ ] Implement a WebSocket client to connect to the Core Engine at `ws://localhost:8765`.
-    *   [ ] Implement logic to serialize `CANDLE_UPDATE` and `SENTIMENT_UPDATE` data into the JSON format specified in `Contract.md`.
-    *   [ ] Implement error handling and reconnection logic for the WebSocket client.
-*   **Core Engine (Module B):**
+*   **Data Bridge (Module A - Server):**
     *   [ ] Implement a WebSocket server to listen for connections on port 8765.
+    *   [ ] Implement logic to serialize `CANDLE_UPDATE` and `SENTIMENT_UPDATE` data into the JSON format specified in `Contract.md`.
+    *   [ ] Implement error handling and client management logic.
+*   **Core Engine (Module B - Client):**
+    *   [ ] Implement a WebSocket client to connect to the Data Bridge at `ws://localhost:8765`.
     *   [ ] Implement logic to deserialize incoming JSON messages into the appropriate Java objects.
     *   [ ] Implement placeholder logic to process the received data (e.g., logging the data to the console).
 

@@ -37,21 +37,6 @@ from tradingview_screener import Query, col
 from NSEAPICLient import NSEHistoricalAPI
 from SymbolMaster import MASTER as SymbolMaster
 
-# Yahoo Finance Import (Level 3 Fallback)
-try:
-    import yfinance as yf
-    YAHOO_AVAILABLE = True
-except ImportError:
-    YAHOO_AVAILABLE = False
-    print("[WARN] yfinance not found. Level 3 Candle Fallback disabled.")
-
-try:
-    from backfill_trendlyne import DB as TrendlyneDB, fetch_live_snapshot
-except ImportError:
-    TrendlyneDB = None
-    fetch_live_snapshot = None
-    print("[WARN] could not import backfill_trendlyne. Option chain data will be missing.")
-
 # Upstox SDK Imports
 try:
     import upstox_client
@@ -59,7 +44,14 @@ try:
     UPSTOX_AVAILABLE = True
 except ImportError:
     UPSTOX_AVAILABLE = False
-    print("[WARN] Upstox SDK or config not found. Level 3 Fallback disabled.")
+    print("[WARN] Upstox SDK or config not found. Fundamental data source disabled.")
+
+try:
+    from backfill_trendlyne import DB as TrendlyneDB, fetch_live_snapshot
+except ImportError:
+    TrendlyneDB = None
+    fetch_live_snapshot = None
+    print("[WARN] could not import backfill_trendlyne. Option chain data will be missing.")
 
 # Configuration
 SYMBOLS = [
@@ -80,6 +72,49 @@ class SOSDataBridgeServer:
         self.connected_clients = set()
         self.pcr_data = {"NIFTY": 1.0, "BANKNIFTY": 1.0}
         self.market_breadth = {"advances": 0, "declines": 0}
+        self.db_path = "backtest_data.db"
+        self._init_db()
+
+    def _init_db(self):
+        """Initializes the SQLite database for candle persistence."""
+        import sqlite3
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS backtest_candles (
+                            symbol TEXT,
+                            date TEXT,
+                            timestamp TEXT,
+                            open REAL,
+                            high REAL,
+                            low REAL,
+                            close REAL,
+                            volume INTEGER,
+                            source TEXT,
+                            PRIMARY KEY (symbol, date, timestamp)
+                          )''')
+        conn.commit()
+        conn.close()
+
+    def _persist_candle(self, symbol, timestamp_ms, candle_data):
+        """Saves a single candle update to the database."""
+        import sqlite3
+        try:
+            dt = datetime.fromtimestamp(timestamp_ms / 1000)
+            date_str = dt.strftime("%Y-%m-%d")
+            time_str = dt.strftime("%H:%M")
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""INSERT OR REPLACE INTO backtest_candles 
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (symbol, date_str, time_str,
+                            candle_data['open'], candle_data['high'], 
+                            candle_data['low'], candle_data['close'],
+                            candle_data['volume'], 'live_bridge'))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[DB ERROR] Failed to persist candle for {symbol}: {e}")
 
     async def connection_handler(self, websocket):
         """Handles a new client connection, managing its lifecycle."""
@@ -115,34 +150,55 @@ class SOSDataBridgeServer:
         self.connected_clients.difference_update(disconnected_clients)
 
 
+    async def fetch_all_candles(self):
+        """Orchestrates fetching candles from multiple sources with fallbacks."""
+        # Run synchronous network calls in threads to avoid blocking the event loop
+        if UPSTOX_AVAILABLE and hasattr(config, 'ACCESS_TOKEN') and config.ACCESS_TOKEN:
+            try:
+                data = await asyncio.to_thread(self._fetch_candles_upstox)
+                if data: return data
+            except Exception as e: print(f"[WARN] Upstox fetch failed: {e}")
+        
+        try:
+            data = await asyncio.to_thread(self._fetch_candles_tv)
+            if data: return data
+        except Exception as e: print(f"[WARN] TradingView fetch failed: {e}")
+        
+        return []
+
     async def publish_sentiment_update(self):
         """Calculates and broadcasts the `SENTIMENT_UPDATE` message every 30 seconds."""
         while True:
-            await self.update_pcr_and_breadth()
+            # Run the synchronous update in a separate thread
+            await asyncio.to_thread(self.update_pcr_and_breadth_sync)
+            
             pcr = self.pcr_data.get("NIFTY", 1.0)
             adv = self.market_breadth.get("advances", 0)
             dec = self.market_breadth.get("declines", 1)
-            regime = "UNKNOWN"
+            regime = self._calculate_sentiment_regime()
             ratio = adv / dec if dec > 0 else adv
 
-            if pcr < 0.8 and ratio > 1.5: regime = "COMPLETE_BULLISH"
-            elif pcr < 0.9 and ratio > 1.2: regime = "BULLISH"
-            elif pcr < 1.0 and ratio > 1.0: regime = "SIDEWAYS_BULLISH"
-            elif pcr > 1.2 and ratio < 0.7: regime = "COMPLETE_BEARISH"
-            elif pcr > 1.1 and ratio < 0.9: regime = "BEARISH"
-            elif pcr > 1.0 and ratio < 1.0: regime = "SIDEWAYS_BEARISH"
-            else: regime = "SIDEWAYS"
-
-            message = {"type": "SENTIMENT_UPDATE", "timestamp": int(time.time() * 1000), "data": {"regime": regime}}
+            message = {
+                "type": "SENTIMENT_UPDATE", 
+                "timestamp": int(time.time() * 1000), 
+                "data": {
+                    "regime": regime,
+                    "pcr": pcr,
+                    "advances": adv,
+                    "declines": dec,
+                    "pcrVelocity": 0.0,
+                    "oiWallAbove": 0.0,
+                    "oiWallBelow": 0.0
+                }
+            }
             await self.send_to_all(message)
             if self.connected_clients:
                 print(f"[SENTIMENT] Broadcast update: {regime} (PCR: {pcr}, ADV/DEC: {round(ratio, 2)})")
 
             await asyncio.sleep(30)
 
-    async def update_pcr_and_breadth(self):
-        """Internal method to fetch latest PCR and Breadth data."""
-        # This logic remains unchanged
+    def update_pcr_and_breadth_sync(self):
+        """Internal method to fetch latest PCR and Breadth data (Synchronous version)."""
         try:
             data = self.nse.get_market_breadth()
             if data and 'advance' in data:
@@ -171,11 +227,17 @@ class SOSDataBridgeServer:
             if all_candles_data:
                 for candle_info in all_candles_data:
                     candle_data = candle_info["1m"]
+                    sym = candle_info["symbol"]
+                    ts = candle_info["timestamp"]
+                    
+                    # Persist to DB
+                    self._persist_candle(sym, ts, candle_data)
+
                     message = {
                         "type": "CANDLE_UPDATE",
-                        "timestamp": candle_info["timestamp"],
+                        "timestamp": ts,
                         "data": {
-                            "symbol": candle_info["symbol"],
+                            "symbol": sym,
                             "candle": {
                                 "open": float(candle_data.get("open", 0.0)),
                                 "high": float(candle_data.get("high", 0.0)),
@@ -187,7 +249,7 @@ class SOSDataBridgeServer:
                     }
                     await self.send_to_all(message)
                 if self.connected_clients:
-                    print(f"[CANDLE] Broadcast updates for {len(all_candles_data)} symbols.")
+                    print(f"[CANDLE] Broadcast and persisted {len(all_candles_data)} symbols.")
             await asyncio.sleep(10)
 
     def _calculate_sentiment_regime(self):
@@ -211,22 +273,25 @@ class SOSDataBridgeServer:
         every 15 seconds, conforming to the primary data contract.
         """
         while True:
-            # 1. Fetch latest sentiment indicators (already running in background)
             pcr = self.pcr_data.get("NIFTY", 1.0)
             regime = self._calculate_sentiment_regime()
 
-            # 2. Fetch latest candle data
             all_candles_data = await self.fetch_all_candles()
 
             if all_candles_data:
-                # 3. Construct and send composite message for each symbol
                 for candle_info in all_candles_data:
                     candle_data = candle_info["1m"]
+                    sym = candle_info["symbol"]
+                    ts = candle_info["timestamp"]
+                    
+                    # Persist to DB
+                    self._persist_candle(sym, ts, candle_data)
+
                     message = {
                         "type": "MARKET_UPDATE",
-                        "timestamp": candle_info["timestamp"],
+                        "timestamp": ts,
                         "data": {
-                            "symbol": candle_info["symbol"],
+                            "symbol": sym,
                             "candle": {
                                 "open": float(candle_data.get("open", 0.0)),
                                 "high": float(candle_data.get("high", 0.0)),
@@ -241,41 +306,10 @@ class SOSDataBridgeServer:
                         }
                     }
                     await self.send_to_all(message)
-
                 if self.connected_clients:
-                    print(f"[MARKET] Broadcast updates for {len(all_candles_data)} symbols.")
-
+                    print(f"[MARKET] Broadcast and persisted {len(all_candles_data)} symbols.")
+            
             await asyncio.sleep(15)
-
-    async def fetch_all_candles(self):
-        """Orchestrates fetching candles from multiple sources with fallbacks."""
-        # This logic remains unchanged
-        if UPSTOX_AVAILABLE and hasattr(config, 'ACCESS_TOKEN') and config.ACCESS_TOKEN:
-            try: return self._fetch_candles_upstox()
-            except Exception as e: print(f"[WARN] Upstox fetch failed: {e}")
-        try: return self._fetch_candles_tv()
-        except Exception as e: print(f"[WARN] TradingView fetch failed: {e}")
-        try: return self._fetch_candles_yahoo()
-        except Exception as e: print(f"[ERROR] All candle sources failed: {e}")
-        return []
-
-    def _fetch_candles_yahoo(self):
-        """Fallback: Fetch from Yahoo Finance."""
-        # This logic remains unchanged
-        if not YAHOO_AVAILABLE: return []
-        candles = []
-        ts = int(time.time() * 1000)
-        for sym in self.symbols:
-            y_sym = f"{sym}.NS"
-            if sym == "NIFTY": y_sym = "^NSEI"
-            if sym == "BANKNIFTY": y_sym = "^NSEBANK"
-            try:
-                df = yf.Ticker(y_sym).history(period="1d", interval="1m")
-                if not df.empty:
-                    last = df.iloc[-1]
-                    candles.append({"symbol": sym, "timestamp": ts, "1m": {"open": last['Open'], "high": last['High'], "low": last['Low'], "close": last['Close'], "volume": last['Volume']}})
-            except Exception: continue
-        return candles
 
     def _fetch_candles_upstox(self):
         """PRIMARY: Fetch historical candles for a specific date using Upstox API."""

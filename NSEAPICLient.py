@@ -113,8 +113,10 @@ if __name__ == "__main__":
 
     # 1. Fetch available stock option symbols (OPTSTK)
     stock_symbols = nse_api.get_available_symbols(instrument_type="OPTSTK")
-    if stock_symbols:
+    if stock_symbols and isinstance(stock_symbols, list):
         print(f"Found {len(stock_symbols)} stock symbols. First 5: {stock_symbols[:5]}")
+    else:
+        print(f"Failed to fetch stock symbols or unexpected format: {stock_symbols}")
 
     # 2. Fetch available index futures symbols (FUTIDX)
     index_futures_symbols = nse_api.get_available_symbols(instrument_type="FUTIDX")

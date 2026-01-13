@@ -21,6 +21,10 @@ import sqlite3
 from datetime import datetime, timedelta
 import time
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Local modules
 from backfill_trendlyne import DB as TrendlyneDB
 
@@ -109,40 +113,32 @@ class BacktestReplayEngine:
         
         candles_at_time = self.candle_data[timestamp_str]
         
-        # Convert to bridge format
-        candle_updates = []
+        if not self.clients:
+            return
+
         for c in candles_at_time:
             # Calculate timestamp in epoch milliseconds
             dt = datetime.strptime(f"{self.target_date} {timestamp_str}", "%Y-%m-%d %H:%M")
             ts_ms = int(dt.timestamp() * 1000)
             
-            candle_updates.append({
+            # Format to match Bridge/Engine expectation
+            payload = {
                 "symbol": c['symbol'],
-                "timestamp": ts_ms,
-                "1m": {
-                    "open": c['open'],
-                    "high": c['high'],
-                    "low": c['low'],
-                    "close": c['close'],
-                    "volume": c['volume'],
-                    "vwap": c['close']  # Approximation
-                },
-                "5m": {  # Placeholder - would need aggregation logic
-                    "open": c['open'],
-                    "high": c['high'],
-                    "low": c['low'],
-                    "close": c['close'],
-                    "volume": c['volume']
-                },
-                "pcr": self._get_pcr(c['symbol']) if c['symbol'] in ['NIFTY', 'BANKNIFTY'] else 1.0
-            })
+                "candle": {
+                    "open": float(c['open']),
+                    "high": float(c['high']),
+                    "low": float(c['low']),
+                    "close": float(c['close']),
+                    "volume": int(c['volume']),
+                }
+            }
+            
+            message = {
+                "type": "CANDLE_UPDATE",
+                "timestamp": ts_ms, 
+                "data": payload
+            }
         
-        message = {
-            "type": "candle_update",
-            "data": candle_updates
-        }
-        
-        if self.clients:
             await asyncio.gather(
                 *[client.send(json.dumps(message)) for client in self.clients],
                 return_exceptions=True
@@ -154,9 +150,12 @@ class BacktestReplayEngine:
             chain = self._get_option_chain(symbol, self.current_time)
             if chain:
                 message = {
-                    "type": "option_chain",
-                    "symbol": symbol,
-                    "data": chain
+                    "type": "OPTION_CHAIN_UPDATE",
+                    "timestamp": int(time.time() * 1000),
+                    "data": {
+                        "symbol": symbol,
+                        "chain": chain
+                    }
                 }
                 
                 if self.clients:
@@ -170,9 +169,13 @@ class BacktestReplayEngine:
         for symbol in ['NIFTY', 'BANKNIFTY']:
             pcr = self._get_pcr(symbol)
             message = {
-                "type": "pcr_update",
-                "symbol": symbol,
-                "pcr": pcr
+                "type": "SENTIMENT_UPDATE",
+                "timestamp": int(time.time() * 1000),
+                "data": {
+                    "symbol": symbol,
+                    "pcr": pcr,
+                    "regime": "SIDEWAYS" # Default for backtest if not available
+                }
             }
             
             if self.clients:
