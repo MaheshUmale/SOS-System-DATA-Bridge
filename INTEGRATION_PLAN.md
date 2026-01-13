@@ -1,104 +1,124 @@
 # Integration Plan: Data Bridge and Core Engine
 
-**Document Status: FINAL**
+## Introduction
 
-This document outlines the step-by-step plan for integrating the Data Bridge (Module A) and the Core Engine (Module B).
+This document outlines the step-by-step plan for integrating the Python-based **Data Bridge (Module A)** with the Java-based **Core Engine (Module B)**. The goal is to create a robust, end-to-end system where the Core Engine can successfully receive and process all specified data types from the Data Bridge via a WebSocket connection.
+
+This is a forward-looking plan intended to guide a developer through the integration process.
+
+---
 
 ## Phase 0: Project Kick-off & Alignment
 
-### A. Collaboration & Communication
+**Goal:** Ensure all stakeholders are aligned and have a shared understanding of the project scope and technical requirements.
 
-*   **Points of Contact (PoCs):**
-    *   **Module A (Data Bridge):** AI Integration Specialist
-    *   **Module B (Core Engine):** AI Integration Specialist
-*   **Communication Channels:**
-    *   **Primary:** Slack channel #sos-integration for daily communication.
-    *   **Secondary:** GitHub Issues in the `SOS-System-DATA-Bridge` repository for tracking tasks and bugs.
-*   **Meetings:**
-    *   **Daily Stand-ups:** 15-minute daily meetings during the development phase.
-    *   **Weekly Sync:** 1-hour weekly meeting with all stakeholders.
+**A. Technical Checklist:**
+*   [ ] **Review `Contract.md`:** The development team for the Core Engine must thoroughly review the [Data Bridge Contract](https://github.com/MaheshUmale/SOS-System-DATA-Bridge/blob/main/Contract.md) to understand the WebSocket interface, message types (`CANDLE_UPDATE`, `SENTIMENT_UPDATE`, etc.), and data structures.
+*   [ ] **Dependency Review:**
+    *   Confirm all Python dependencies listed in `requirements.txt` for the Data Bridge.
+    *   Confirm all Java dependencies listed in the `pom.xml` for the Core Engine.
 
-### B. Definition of Done
+**B. Collaboration & Communication:**
+*   **Communication Channel:** Establish a dedicated Slack/Teams channel (e.g., `#sos-integration`) for real-time communication.
+*   **Point of Contact (PoC):**
+    *   **Data Bridge (Module A):** @MaheshUmale
+    *   **Core Engine (Module B):** @MaheshUmale
+*   **Definition of Done:**
+    *   **End-to-End Test Suite:** A comprehensive integration test suite is created and all tests are passing.
+    *   **Successful Data Exchange:** The Core Engine can successfully receive and deserialize all message types (`CANDLE_UPDATE`, `SENTIMENT_UPDATE`, `MARKET_UPDATE`, `OPTION_CHAIN_UPDATE`) from the Data Bridge.
+    *   **Documentation:** A `RUNBOOK.md` is created with clear instructions for setting up and running the integrated system.
+    *   **Code Review:** The implementation has been peer-reviewed and approved.
 
-The integration is "Done" when:
-
-1.  **Technical Success Criteria:**
-    *   The Core Engine (client) successfully establishes and maintains a persistent WebSocket connection to the Data Bridge (server).
-    *   The Core Engine correctly receives, deserializes, and processes `CANDLE_UPDATE` and `SENTIMENT_UPDATE` messages in real-time.
-    *   All automated integration tests, covering connection, data parsing, and error handling, pass in the staging environment.
-    *   The integrated system runs for 48 continuous hours in staging under simulated production load without critical failures or data loss.
-
-2.  **Project Deliverables:**
-    *   All code changes are peer-reviewed, merged, and deployed to production.
-    *   Finalized documentation, including this updated integration plan and relevant README modifications, is approved.
+---
 
 ## Phase 1: Environment Setup & Interface Definition Review
 
-### A. Technical Checklists
+**Goal:** Prepare the local development environment and verify basic connectivity between the two modules.
 
-*   **Connectivity:**
-    *   [ ] Provision an integration environment (Docker Compose is recommended for local setup).
-    *   [ ] Confirm no firewall rules block WebSocket traffic on port 8765.
-    *   [ ] Perform a successful connection test from a generic WebSocket client to the running Data Bridge server.
+**A. Technical Checklist:**
+*   [ ] **Clone Repositories:** Set up a workspace with both repositories cloned as sibling directories.
+    ```bash
+    mkdir sos-workspace
+    cd sos-workspace
+    git clone https://github.com/MaheshUmale/SOS-System-DATA-Bridge.git
+    git clone https://github.com/MaheshUmale/Scalping-Orchestration-System-SOS-.git
+    ```
+*   [ ] **Install Data Bridge Dependencies:**
+    ```bash
+    cd SOS-System-DATA-Bridge
+    pip install -r requirements.txt
+    ```
+*   [ ] **Install Core Engine Dependencies:**
+    ```bash
+    cd ../Scalping-Orchestration-System-SOS-/sos-engine
+    mvn clean install
+    ```
+*   [ ] **Create Unified Database:** The Data Bridge requires a SQLite database. Create it by running the following from the `SOS-System-DATA-Bridge` root:
+    ```bash
+    python3 create_unified_db.py
+    ```
+*   [ ] **Initial Connectivity Test:**
+    1.  Start the Data Bridge server from the `SOS-System-DATA-Bridge` root: `python3 tv_data_bridge.py`.
+    2.  Create a temporary Java test file in the Core Engine (`src/test/java/.../ConnectionTest.java`) to act as a simple WebSocket client.
+    3.  Run this test to confirm a successful WebSocket connection to `ws://localhost:8765`. This verifies the environment is correctly configured.
 
-*   **Data Validation:**
-    *   [ ] Conduct a joint review of `Contract.md` to confirm a shared understanding of the data schema.
-    *   [ ] Manually construct and send a sample `CANDLE_UPDATE` JSON object from a test client to the Core Engine's processing logic to verify parsing.
-    *   [ ] Manually construct and send a sample `SENTIMENT_UPDATE` JSON object to verify parsing in the Core Engine.
+---
 
 ## Phase 2: Development & Iterative Testing (Sandbox)
 
-### A. Development Tasks
+**Goal:** Implement the data handling logic in the Core Engine and create a robust integration test suite.
 
-*   **Data Bridge (Module A):**
-    *   [ ] No development tasks required as it already functions as a WebSocket server.
-    *   [ ] Verify server is running and accessible on `ws://localhost:8765`.
+**A. Technical Checklist:**
+*   [ ] **Create Java Data Models (POJOs):** In the Core Engine, create a new package `com.trading.hf.model`. Inside, define Java classes that map directly to the JSON structures in `Contract.md`:
+    *   `BaseMessage.java` (with `type`, `timestamp`, and `data` fields)
+    *   `Candle.java`
+    *   `CandleUpdate.java`
+    *   `SentimentUpdate.java`
+    *   `MarketUpdate.java`
+    *   `OptionChainUpdate.java`
+*   [ ] **Implement Deserialization Logic:**
+    *   Modify the `onMessage` method in `TVMarketDataStreamer.java`.
+    *   Use the Jackson `ObjectMapper` to deserialize the incoming JSON string first into `BaseMessage.java`.
+    *   Based on the `type` field, deserialize the `data` node into the corresponding specific class (e.g., `CandleUpdate`).
+*   [ ] **Develop Integration Test Suite:**
+    *   Create a permanent integration test file: `src/test/java/com/trading/hf/IntegrationTest.java`.
+    *   This test should:
+        1.  Programmatically start the Python Data Bridge as a background process.
+        2.  Connect the Core Engine's WebSocket client.
+        3.  Use `CountDownLatch` or a similar mechanism to wait for and verify that at least one of each message type (`CANDLE_UPDATE`, `SENTIMENT_UPDATE`, `MARKET_UPDATE`, `OPTION_CHAIN_UPDATE`) is received.
+        4.  Ensure the Data Bridge process is terminated and the port is freed in a `tearDown` method.
 
-*   **Core Engine (Module B):**
-    *   [ ] Implement a robust WebSocket client to connect to the Data Bridge at `ws://localhost:8765`.
-    *   [ ] Implement reconnection logic with exponential backoff in the client to handle network interruptions.
-    *   [ ] Implement the LMAX Disruptor pipeline for processing incoming messages.
-    *   [ ] Implement Java logic to deserialize `CANDLE_UPDATE` and `SENTIMENT_UPDATE` JSON messages into Java objects.
-    *   [ ] Implement placeholder logic (e.g., logging to the console) to confirm successful data reception and processing.
-
-### B. Testing Strategy
-
-*   **Unit Tests:**
-    *   **Core Engine:**
-        *   [ ] Test the WebSocket client's ability to connect, receive messages, and handle connection errors gracefully.
-        *   [ ] Test the JSON deserialization logic with valid and malformed messages.
-
-*   **Integration Tests:**
-    *   [ ] Develop an automated test suite that runs the Data Bridge server and Core Engine client together.
-    *   [ ] The test will send a sequence of mixed `CANDLE_UPDATE` and `SENTIMENT_UPDATE` messages.
-    *   [ ] Verify that the Core Engine client receives and processes all messages in the correct order.
+---
 
 ## Phase 3: UAT (User Acceptance Testing) & Staging Deployment
 
-### A. UAT Plan
+**Goal:** Validate the integrated system in a production-like environment.
 
-*   **Objective:** Validate that the integrated system meets end-user requirements.
-*   **Data Sets:** Prepare anonymized production data samples covering various market conditions.
-*   **Test Cases:**
-    *   [ ] Provide end-users with test cases covering the main functionalities.
-    *   [ ] Users will verify that the Core Engine's state and outputs correspond correctly to the data broadcast by the Data Bridge.
+**A. Technical Checklist:**
+*   [ ] **Prepare Runbook:** Create a `RUNBOOK.md` with clear, concise instructions on how to run the fully integrated system.
+*   [ ] **Deploy to Staging:** Deploy both modules to a staging environment.
+*   [ ] **Execute UAT Plan:** Run a predefined set of tests using anonymized production data to ensure the system behaves as expected under real-world conditions.
+*   [ ] **Performance and Load Testing:**
+    *   Develop a test script to simulate a high volume of WebSocket messages.
+    *   Measure the end-to-end latency from the Data Bridge to the Core Engine.
+    *   Monitor CPU and memory usage under load to identify any performance bottlenecks.
+*   [ ] **Sign-off:** Obtain formal approval from all stakeholders before proceeding.
+
+---
 
 ## Phase 4: Go-Live & Post-Deployment Monitoring
 
-### A. Go-Live Plan
+**Goal:** Deploy the system to production and monitor its performance.
 
-*   **Deployment:** Schedule a maintenance window for production deployment.
-*   **Smoke Tests:** Perform post-deployment smoke tests to verify system functionality.
+**A. Technical Checklist:**
+*   [ ] **Production Deployment:** Follow the deployment plan to release the integrated system.
+*   [ ] **Monitoring:** Set up dashboards and alerts to monitor key metrics:
+    *   WebSocket connection stability.
+    *   Message latency.
+    *   CPU and memory usage of both modules.
 
-### B. Post-Deployment Monitoring
-
-*   **Monitoring:** Closely monitor system logs and performance metrics for any anomalies.
-*   **Support:** Establish an on-call rotation for production support.
-
-### C. Risk & Rollback
-
-*   **Risks:**
-    *   **Schema Drift:** Mitigation: Implement strict schema validation in the Core Engine.
-    *   **Latency Issues:** Mitigation: Conduct thorough performance testing in Phase 2.
-*   **Rollback Procedure:**
-    *   In case of critical failure, redeploy the previous stable versions of both modules from the artifact repository.
+**B. Risk & Rollback Plan:**
+*   **Identified Risks:**
+    *   **Schema Drift:** The Python bridge might change its data format. Mitigation: Implement versioning in the API contract.
+    *   **Latency:** Network issues could delay message delivery. Mitigation: Add timestamps to messages to monitor and alert on high latency.
+*   **Rollback Procedure:** In case of critical failure, the previous standalone versions of the modules will be redeployed. A post-mortem will be conducted to analyze the root cause.
