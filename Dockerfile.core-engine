@@ -4,7 +4,7 @@ FROM maven:3.8.4-openjdk-11 AS build
 WORKDIR /app
 
 # Copy the entire sos-engine directory into the build stage
-COPY ./Scalping-Orchestration-System-SOS-/sos-engine /app
+COPY sos-engine /app
 
 # Build the application
 RUN mvn clean package

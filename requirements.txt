@@ -2,5 +2,4 @@ requests
 websockets
 pandas
 tradingview-screener
-yfinance
 upstox-python-sdk==2.19.0

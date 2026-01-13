@@ -36,7 +36,13 @@ class TestContract(unittest.TestCase):
         self.assertEqual(data["type"], "SENTIMENT_UPDATE")
         data_payload = data["data"]
         self.assertIn("regime", data_payload)
+        self.assertIn("pcr", data_payload)
+        self.assertIn("advances", data_payload)
+        self.assertIn("declines", data_payload)
         self.assertIsInstance(data_payload["regime"], str)
+        self.assertIsInstance(data_payload["pcr"], float)
+        self.assertIsInstance(data_payload["advances"], int)
+        self.assertIsInstance(data_payload["declines"], int)
 
     def assert_market_update_structure(self, data):
         self.assert_base_structure(data)

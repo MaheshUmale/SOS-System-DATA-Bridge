@@ -8,7 +8,7 @@ This document outlines the data contract for third-party applications to act as 
 - **Data Format:** JSON
 - **Default URI:** `ws://localhost:8765`
 
-All communication between the data bridge and the SOS Engine is handled via a WebSocket connection. The bridge is expected to send JSON-formatted text messages to the engine. The engine will listen for connections on the URI specified in its `application.properties` file, which defaults to `ws://localhost:8765`.
+All communication between the data bridge and the SOS Engine is handled via a WebSocket connection. The **Data Bridge acts as the WebSocket Server**, listening for connections on port 8765. The **SOS Engine acts as the WebSocket Client**, initiating the connection to the bridge. The bridge sends JSON-formatted text messages to the engine upon connection and updates.
 
 ## 2. General Message Structure
 
@@ -55,7 +55,12 @@ This message provides a high-level overview of the current market sentiment, enc
 
 | Field    | Type   | Description                                     |
 |----------|--------|-------------------------------------------------|
-| `regime` | String | A string representing the current market state. |
+| Field       | Type   | Description                                     |
+|-------------|--------|-------------------------------------------------|
+| `regime`    | String | A string representing the current market state. |
+| `pcr`       | Double | Put-Call Ratio of the primary index.            |
+| `advances`  | Integer| Number of advancing stocks in the market.       |
+| `declines`  | Integer| Number of declining stocks in the market.       |
 
 #### `regime` Enum Values
 

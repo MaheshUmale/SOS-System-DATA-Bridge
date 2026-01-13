@@ -29,6 +29,7 @@ Author: Mahesh
 Version: 1.0
 """
 
+import sqlite3
 import requests
 import gzip
 import io
@@ -48,79 +49,105 @@ class SymbolMaster:
             cls._instance = super(SymbolMaster, cls).__new__(cls)
         return cls._instance
 
+    def _init_sqlite_cache(self):
+        """Initialize the SQLite database for instrument mappings."""
+        db_path = "sos_master_data.db"
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS instrument_master (
+                            trading_symbol TEXT PRIMARY KEY,
+                            instrument_key TEXT,
+                            segment TEXT,
+                            name TEXT
+                          )''')
+        conn.commit()
+        return conn
+
     def initialize(self):
         """
-        Downloads and parses the Upstox NSE instrument master with daily caching.
-
-        This method is idempotent. It will only download the master file if the
-        cached version is older than 24 hours or does not exist.
-
-        Raises:
-            Exception: If both download and cache load fail.
+        Loads instrument keys with multi-level caching (SQLite > Disk GZ > Network).
         """
         if self._initialized:
             return
 
+        import sqlite3
         print("[SymbolMaster] Initializing Instrument Keys...")
+        db_path = "sos_master_data.db"
         cache_file = "upstox_instruments.json.gz"
         cache_age_seconds = 24 * 60 * 60  # 24 hours
-        content = None
+        
+        # 1. Try SQLite Cache first
+        try:
+            if os.path.exists(db_path):
+                conn = sqlite3.connect(db_path)
+                df_cache = pd.read_sql_query("SELECT * FROM instrument_master", conn)
+                conn.close()
+                
+                if not df_cache.empty:
+                    print(f"  [INFO] Loading from SQLite cache: {db_path}")
+                    for _, row in df_cache.iterrows():
+                        name = row['trading_symbol'].upper()
+                        key = row['instrument_key']
+                        segment = row['segment']
+                        self._mappings[name] = key
+                        self._reverse_mappings[key] = (name, segment)
+                        if segment == 'NSE_INDEX':
+                            if row['name'] == "Nifty 50": self._mappings["NIFTY"] = key
+                            elif row['name'] == "Nifty Bank": self._mappings["BANKNIFTY"] = key
+                    
+                    print(f"  ✓ Loaded {len(self._mappings)} keys from SQLite.")
+                    self._initialized = True
+                    return
+        except Exception as e:
+            print(f"  [WARN] SQLite cache load failed: {e}")
 
-        # 1. Check Cache Validity
+        # 2. Check GZ Cache Validity or Download
+        content = None
         if os.path.exists(cache_file) and (time.time() - os.path.getmtime(cache_file)) < cache_age_seconds:
-            print(f"  [INFO] Loading from fresh disk cache: {cache_file}")
+            print(f"  [INFO] Loading from disk GZ cache: {cache_file}")
             with open(cache_file, "rb") as f:
                 content = f.read()
         else:
-            # 2. Download if Cache is Stale or Missing
             try:
-                print("  [INFO] Cache is stale or missing. Downloading from Upstox...")
+                print("  [INFO] Fetching fresh instrument master from Upstox...")
                 url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
                 response = requests.get(url, timeout=60)
                 response.raise_for_status()
                 content = response.content
-
-                # Save to cache
                 with open(cache_file, "wb") as f:
                     f.write(content)
-                print(f"  ✓ Downloaded and cached to {cache_file}")
-
             except Exception as e:
                 print(f"  [WARN] Download failed: {e}")
-                # Fallback to stale cache if it exists
                 if os.path.exists(cache_file):
-                    print(f"  [INFO] Using stale disk cache as fallback: {cache_file}")
-                    with open(cache_file, "rb") as f:
-                        content = f.read()
-                else:
-                    print("  ✗ No disk cache available.")
-                    raise e
+                    print(f"  [INFO] Fallback to stale GZ cache: {cache_file}")
+                    with open(cache_file, "rb") as f: content = f.read()
 
         if not content:
-            raise Exception("Failed to load instrument master content.")
+            raise Exception("Failed to load instrument master from any source.")
 
-        # 3. Parse content (same as before)
+        # 3. Parse and Populate SQLite
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(content)) as f:
                 df = pd.read_json(f)
 
-            df_filtered = df[df['segment'].isin(['NSE_EQ', 'NSE_INDEX'])].copy()
+            df_filtered = df[df['segment'].isin(['NSE_EQ', 'NSE_INDEX', 'NSE_FO'])][['trading_symbol', 'instrument_key', 'segment', 'name']].copy()
+            
+            # Save to SQLite for next time
+            conn = self._init_sqlite_cache()
+            df_filtered.to_sql('instrument_master', conn, if_exists='replace', index=False)
+            conn.close()
 
             for _, row in df_filtered.iterrows():
                 name = row['trading_symbol'].upper()
                 key = row['instrument_key']
                 segment = row['segment']
-
                 self._mappings[name] = key
                 self._reverse_mappings[key] = (name, segment)
-
                 if segment == 'NSE_INDEX':
-                    if row['name'] == "Nifty 50" or row['trading_symbol'] == "Nifty 50":
-                        self._mappings["NIFTY"] = key
-                    elif row['name'] == "Nifty Bank" or row['trading_symbol'] == "Nifty Bank":
-                        self._mappings["BANKNIFTY"] = key
+                    if row['name'] == "Nifty 50": self._mappings["NIFTY"] = key
+                    elif row['name'] == "Nifty Bank": self._mappings["BANKNIFTY"] = key
 
-            print(f"[SymbolMaster] Loaded {len(self._mappings)} keys.")
+            print(f"  ✓ Parsed and cached {len(self._mappings)} keys to SQLite.")
             self._initialized = True
 
         except Exception as e:

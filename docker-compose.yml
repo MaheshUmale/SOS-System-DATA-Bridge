@@ -13,8 +13,8 @@ services:
 
   core-engine:
     build:
-      context: .
-      dockerfile: Dockerfile.core-engine
+      context: ../Scalping-Orchestration-System-SOS-
+      dockerfile: ../SOS-System-DATA-Bridge/Dockerfile.core-engine
     container_name: core-engine
     environment:
       - WEBSOCKET_URI=ws://data-bridge:8765
