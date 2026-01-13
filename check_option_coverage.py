@@ -1,39 +1,53 @@
 import sqlite3
 
-# Check backtest_data.db
+# Check sos_unified.db for option data coverage
 print("=" * 80)
-print("BACKTEST_DATA.DB - Option Coverage")
+print("SOS_UNIFIED.DB - Option Data Coverage")
 print("=" * 80)
-conn = sqlite3.connect('backtest_data.db')
 
-# Get all option symbols
-options = conn.execute("""
-    SELECT DISTINCT symbol 
-    FROM backtest_candles 
-    WHERE (symbol LIKE '%CE%' OR symbol LIKE '%PE%') 
-    AND symbol NOT IN ('BAJFINANCE', 'RELIANCE', 'ULTRACEMCO')
-""").fetchall()
-
-print(f"\n✅ Option contracts with candles: {len(options)}")
-for opt in options:
-    count = conn.execute(f"SELECT COUNT(*) FROM backtest_candles WHERE symbol='{opt[0]}'").fetchone()[0]
-    print(f"  - {opt[0]}: {count} candles")
-
-conn.close()
-
-# Check timeseries DB
-print("\n" + "=" * 80)
-print("SOS_TIMESERIES_2026_01.DB - PCR/OI Data")
-print("=" * 80)
 try:
-    conn = sqlite3.connect('sos_timeseries_2026_01.db')
-    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-    print(f"\n✅ Tables: {[t[0] for t in tables]}")
+    conn = sqlite3.connect('sos_unified.db')
+    cursor = conn.cursor()
+
+    # 1. Check for option symbols in the candles table
+    print("\n--- Candle Data for Options ---")
+    options_in_candles = cursor.execute("""
+        SELECT DISTINCT symbol
+        FROM candles
+        WHERE (symbol LIKE '%CE%' OR symbol LIKE '%PE%')
+    """).fetchall()
+
+    if options_in_candles:
+        print(f"✅ Found {len(options_in_candles)} unique option contracts with candle data.")
+        for opt in options_in_candles:
+            count = cursor.execute("SELECT COUNT(*) FROM candles WHERE symbol=?", (opt[0],)).fetchone()[0]
+            print(f"  - {opt[0]}: {count} candles")
+    else:
+        print("❌ No option symbols found in the 'candles' table.")
+
+    # 2. Check for data in the option chain tables
+    print("\n--- Option Chain and Aggregates Data ---")
     
-    for table in tables:
-        count = conn.execute(f"SELECT COUNT(*) FROM {table[0]}").fetchone()[0]
-        print(f"  - {table[0]}: {count} rows")
-    
+    # Check option_aggregates
+    cursor.execute("SELECT COUNT(*) FROM option_aggregates")
+    aggregates_count = cursor.fetchone()[0]
+    if aggregates_count > 0:
+        print(f"✅ Found {aggregates_count} rows in 'option_aggregates'.")
+        # You could add a breakdown by symbol here if needed
+    else:
+        print("❌ No data found in 'option_aggregates'.")
+
+    # Check option_chain_details
+    cursor.execute("SELECT COUNT(*) FROM option_chain_details")
+    details_count = cursor.fetchone()[0]
+    if details_count > 0:
+        print(f"✅ Found {details_count} rows in 'option_chain_details'.")
+    else:
+        print("❌ No data found in 'option_chain_details'.")
+
     conn.close()
+
+except sqlite3.Error as e:
+    print(f"❌ Database Error: {e}")
 except Exception as e:
-    print(f"❌ Error: {e}")
+    print(f"❌ An unexpected error occurred: {e}")

@@ -42,6 +42,7 @@ class SymbolMaster:
     _mappings = {} # { "RELIANCE": "NSE_EQ|INE002A01018" }
     _reverse_mappings = {} # { "NSE_EQ|INE002A01018": "RELIANCE" }
     _initialized = False
+    _db_path = "sos_unified.db"
 
     def __new__(cls):
         """Singleton pattern implementation."""
@@ -49,81 +50,53 @@ class SymbolMaster:
             cls._instance = super(SymbolMaster, cls).__new__(cls)
         return cls._instance
 
-    def _init_sqlite_cache(self):
-        """Initialize the SQLite database for instrument mappings."""
-        db_path = "sos_master_data.db"
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS instrument_master (
-                            trading_symbol TEXT PRIMARY KEY,
-                            instrument_key TEXT,
-                            segment TEXT,
-                            name TEXT
-                          )''')
-        conn.commit()
+    def _get_db_connection(self):
+        """Establishes a connection to the unified SQLite database."""
+        conn = sqlite3.connect(self._db_path)
         return conn
 
     def initialize(self):
         """
-        Loads instrument keys with multi-level caching (SQLite > Disk GZ > Network).
+        Loads instrument keys from the unified database. If the database is empty or stale,
+        it fetches fresh data from the Upstox API and populates the database.
         """
         if self._initialized:
             return
 
-        import sqlite3
-        print("[SymbolMaster] Initializing Instrument Keys...")
-        db_path = "sos_master_data.db"
-        cache_file = "upstox_instruments.json.gz"
-        cache_age_seconds = 24 * 60 * 60  # 24 hours
+        print("[SymbolMaster] Initializing Instrument Keys from Unified DB...")
         
-        # 1. Try SQLite Cache first
+        # 1. Try to load from the unified DB
         try:
-            if os.path.exists(db_path):
-                conn = sqlite3.connect(db_path)
+            conn = self._get_db_connection()
+            # Check if the table has data and when it was last updated.
+            # A simple way is to check the file modification time.
+            db_file_age_seconds = time.time() - os.path.getmtime(self._db_path) if os.path.exists(self._db_path) else float('inf')
+
+            # If DB file is recent (less than 24 hours old), try to load from it
+            if db_file_age_seconds < (24 * 60 * 60):
                 df_cache = pd.read_sql_query("SELECT * FROM instrument_master", conn)
-                conn.close()
-                
                 if not df_cache.empty:
-                    print(f"  [INFO] Loading from SQLite cache: {db_path}")
-                    for _, row in df_cache.iterrows():
-                        name = row['trading_symbol'].upper()
-                        key = row['instrument_key']
-                        segment = row['segment']
-                        self._mappings[name] = key
-                        self._reverse_mappings[key] = (name, segment)
-                        if segment == 'NSE_INDEX':
-                            if row['name'] == "Nifty 50": self._mappings["NIFTY"] = key
-                            elif row['name'] == "Nifty Bank": self._mappings["BANKNIFTY"] = key
-                    
+                    print(f"  [INFO] Loading from recent SQLite cache: {self._db_path}")
+                    self._populate_mappings_from_df(df_cache)
+                    conn.close()
                     print(f"  ✓ Loaded {len(self._mappings)} keys from SQLite.")
                     self._initialized = True
                     return
+            conn.close()
         except Exception as e:
-            print(f"  [WARN] SQLite cache load failed: {e}")
+            print(f"  [WARN] Pre-check or loading from SQLite cache failed: {e}")
 
-        # 2. Check GZ Cache Validity or Download
+        # 2. If loading failed or cache is stale, fetch from network
         content = None
-        if os.path.exists(cache_file) and (time.time() - os.path.getmtime(cache_file)) < cache_age_seconds:
-            print(f"  [INFO] Loading from disk GZ cache: {cache_file}")
-            with open(cache_file, "rb") as f:
-                content = f.read()
-        else:
-            try:
-                print("  [INFO] Fetching fresh instrument master from Upstox...")
-                url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
-                response = requests.get(url, timeout=60)
-                response.raise_for_status()
-                content = response.content
-                with open(cache_file, "wb") as f:
-                    f.write(content)
-            except Exception as e:
-                print(f"  [WARN] Download failed: {e}")
-                if os.path.exists(cache_file):
-                    print(f"  [INFO] Fallback to stale GZ cache: {cache_file}")
-                    with open(cache_file, "rb") as f: content = f.read()
-
-        if not content:
-            raise Exception("Failed to load instrument master from any source.")
+        try:
+            print("  [INFO] Fetching fresh instrument master from Upstox...")
+            url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            content = response.content
+        except Exception as e:
+            print(f"  [CRITICAL] Download failed: {e}")
+            raise Exception("Failed to download instrument master from source.")
 
         # 3. Parse and Populate SQLite
         try:
@@ -132,27 +105,34 @@ class SymbolMaster:
 
             df_filtered = df[df['segment'].isin(['NSE_EQ', 'NSE_INDEX', 'NSE_FO'])][['trading_symbol', 'instrument_key', 'segment', 'name']].copy()
             
-            # Save to SQLite for next time
-            conn = self._init_sqlite_cache()
+            # Save to unified SQLite DB
+            conn = self._get_db_connection()
+            # Use 'replace' to wipe old data and insert the fresh data
             df_filtered.to_sql('instrument_master', conn, if_exists='replace', index=False)
             conn.close()
+            print(f"  [INFO] Successfully wrote {len(df_filtered)} instruments to the unified DB.")
 
-            for _, row in df_filtered.iterrows():
-                name = row['trading_symbol'].upper()
-                key = row['instrument_key']
-                segment = row['segment']
-                self._mappings[name] = key
-                self._reverse_mappings[key] = (name, segment)
-                if segment == 'NSE_INDEX':
-                    if row['name'] == "Nifty 50": self._mappings["NIFTY"] = key
-                    elif row['name'] == "Nifty Bank": self._mappings["BANKNIFTY"] = key
+            # Populate in-memory mappings
+            self._populate_mappings_from_df(df_filtered)
 
-            print(f"  ✓ Parsed and cached {len(self._mappings)} keys to SQLite.")
+            print(f"  ✓ Parsed and cached {len(self._mappings)} keys to unified DB.")
             self._initialized = True
 
         except Exception as e:
-            print(f"[SymbolMaster] Parsing Failed: {e}")
+            print(f"[SymbolMaster] Parsing or DB write failed: {e}")
             raise e
+
+    def _populate_mappings_from_df(self, df):
+        """Helper to populate in-memory dicts from a DataFrame."""
+        for _, row in df.iterrows():
+            name = row['trading_symbol'].upper()
+            key = row['instrument_key']
+            segment = row['segment']
+            self._mappings[name] = key
+            self._reverse_mappings[key] = (name, segment)
+            if segment == 'NSE_INDEX':
+                if row['name'] == "Nifty 50": self._mappings["NIFTY"] = key
+                elif row['name'] == "Nifty Bank": self._mappings["BANKNIFTY"] = key
 
     def get_upstox_key(self, symbol):
         """

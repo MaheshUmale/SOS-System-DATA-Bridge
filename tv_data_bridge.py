@@ -72,49 +72,41 @@ class SOSDataBridgeServer:
         self.connected_clients = set()
         self.pcr_data = {"NIFTY": 1.0, "BANKNIFTY": 1.0}
         self.market_breadth = {"advances": 0, "declines": 0}
-        self.db_path = "backtest_data.db"
-        self._init_db()
+        self.db_path = "sos_unified.db"
+        # The _init_db() method is no longer needed as the unified DB is created externally.
 
-    def _init_db(self):
-        """Initializes the SQLite database for candle persistence."""
-        import sqlite3
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS backtest_candles (
-                            symbol TEXT,
-                            date TEXT,
-                            timestamp TEXT,
-                            open REAL,
-                            high REAL,
-                            low REAL,
-                            close REAL,
-                            volume INTEGER,
-                            source TEXT,
-                            PRIMARY KEY (symbol, date, timestamp)
-                          )''')
-        conn.commit()
-        conn.close()
-
-    def _persist_candle(self, symbol, timestamp_ms, candle_data):
-        """Saves a single candle update to the database."""
+    def _persist_candle(self, symbol, timestamp_ms, candle_data, interval='1m', source='live_bridge'):
+        """Saves a single candle update to the unified database."""
         import sqlite3
         try:
-            dt = datetime.fromtimestamp(timestamp_ms / 1000)
-            date_str = dt.strftime("%Y-%m-%d")
-            time_str = dt.strftime("%H:%M")
-            
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute("""INSERT OR REPLACE INTO backtest_candles 
+            cursor.execute("""INSERT OR REPLACE INTO candles
+                              (symbol, timestamp, interval, open, high, low, close, volume, source)
                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                           (symbol, date_str, time_str,
-                            candle_data['open'], candle_data['high'], 
-                            candle_data['low'], candle_data['close'],
-                            candle_data['volume'], 'live_bridge'))
+                           (symbol, int(timestamp_ms), interval,
+                            candle_data.get('open', 0.0), candle_data.get('high', 0.0),
+                            candle_data.get('low', 0.0), candle_data.get('close', 0.0),
+                            candle_data.get('volume', 0), source))
             conn.commit()
             conn.close()
         except Exception as e:
             print(f"[DB ERROR] Failed to persist candle for {symbol}: {e}")
+
+    def _persist_sentiment(self, timestamp_ms, regime, pcr, advances, declines):
+        """Saves a single sentiment update to the unified database."""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""INSERT OR REPLACE INTO sentiment_updates
+                              (timestamp, regime, pcr, advances, declines)
+                              VALUES (?, ?, ?, ?, ?)""",
+                           (int(timestamp_ms), regime, pcr, advances, declines))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[DB ERROR] Failed to persist sentiment update: {e}")
 
     async def connection_handler(self, websocket):
         """Handles a new client connection, managing its lifecycle."""
@@ -177,10 +169,14 @@ class SOSDataBridgeServer:
             dec = self.market_breadth.get("declines", 1)
             regime = self._calculate_sentiment_regime()
             ratio = adv / dec if dec > 0 else adv
+            timestamp_ms = int(time.time() * 1000)
+
+            # Persist the sentiment update to the database
+            self._persist_sentiment(timestamp_ms, regime, pcr, adv, dec)
 
             message = {
                 "type": "SENTIMENT_UPDATE", 
-                "timestamp": int(time.time() * 1000), 
+                "timestamp": timestamp_ms,
                 "data": {
                     "regime": regime,
                     "pcr": pcr,
@@ -193,7 +189,7 @@ class SOSDataBridgeServer:
             }
             await self.send_to_all(message)
             if self.connected_clients:
-                print(f"[SENTIMENT] Broadcast update: {regime} (PCR: {pcr}, ADV/DEC: {round(ratio, 2)})")
+                print(f"[SENTIMENT] Broadcast and persisted update: {regime} (PCR: {pcr}, ADV/DEC: {round(ratio, 2)})")
 
             await asyncio.sleep(30)
 
@@ -231,7 +227,7 @@ class SOSDataBridgeServer:
                     ts = candle_info["timestamp"]
                     
                     # Persist to DB
-                    self._persist_candle(sym, ts, candle_data)
+                    self._persist_candle(sym, ts, candle_data, source='tv_screener' if 'tv' in candle_info else 'upstox')
 
                     message = {
                         "type": "CANDLE_UPDATE",
@@ -285,7 +281,7 @@ class SOSDataBridgeServer:
                     ts = candle_info["timestamp"]
                     
                     # Persist to DB
-                    self._persist_candle(sym, ts, candle_data)
+                    self._persist_candle(sym, ts, candle_data, source='tv_screener' if 'tv' in candle_info else 'upstox')
 
                     message = {
                         "type": "MARKET_UPDATE",

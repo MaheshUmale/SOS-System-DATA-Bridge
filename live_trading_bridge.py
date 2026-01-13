@@ -12,11 +12,13 @@ import config
 from datetime import datetime
 import subprocess
 import sys
+import sqlite3
 
 class LiveTradingBridge:
     def __init__(self):
         self.configuration = upstox_client.Configuration()
         self.configuration.access_token = config.ACCESS_TOKEN
+        self.db_path = "sos_unified.db"
         
         # Symbols to subscribe (add your universe)
         self.symbols = [
@@ -27,6 +29,23 @@ class LiveTradingBridge:
         
         self.java_process = None
         self.websocket = None
+
+    def _persist_candle(self, symbol, timestamp_ms, candle_data, interval='1m', source='upstox_live'):
+        """Saves a single candle update to the unified database."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""INSERT OR REPLACE INTO candles
+                              (symbol, timestamp, interval, open, high, low, close, volume, source)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (symbol, int(timestamp_ms), interval,
+                            candle_data.get('open', 0.0), candle_data.get('high', 0.0),
+                            candle_data.get('low', 0.0), candle_data.get('close', 0.0),
+                            candle_data.get('volume', 0), source))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[DB ERROR] Failed to persist live candle for {symbol}: {e}")
     
     async def get_market_data_feed_authorize(self):
         """Get authorization for market data feed"""
@@ -91,19 +110,25 @@ class LiveTradingBridge:
                     # Transform Upstox format to SOS format
                     if 'feeds' in data:
                         for symbol_key, feed in data['feeds'].items():
-                            # Extract relevant data
+                            candle_data = {
+                                "open": feed.get('ohlc', {}).get('open', 0),
+                                "high": feed.get('ohlc', {}).get('high', 0),
+                                "low": feed.get('ohlc', {}).get('low', 0),
+                                "close": feed.get('ohlc', {}).get('close', 0),
+                                "volume": feed.get('volume', 0)
+                            }
+
+                            # Persist the candle to the unified database
+                            timestamp_ms = int(datetime.now().timestamp() * 1000)
+                            self._persist_candle(symbol_key, timestamp_ms, candle_data)
+
+                            # Extract relevant data for the SOS message
                             sos_message = {
                                 "type": "MARKET_UPDATE",
                                 "timestamp": datetime.now().isoformat(),
                                 "data": {
                                     "symbol": symbol_key,
-                                    "candle": {
-                                        "open": feed.get('ohlc', {}).get('open', 0),
-                                        "high": feed.get('ohlc', {}).get('high', 0),
-                                        "low": feed.get('ohlc', {}).get('low', 0),
-                                        "close": feed.get('ohlc', {}).get('close', 0),
-                                        "volume": feed.get('volume', 0)
-                                    },
+                                    "candle": candle_data,
                                     "sentiment": {
                                         "upper_circuit": feed.get('upper_circuit_limit', 0),
                                         "lower_circuit": feed.get('lower_circuit_limit', 0)
@@ -132,7 +157,7 @@ class LiveTradingBridge:
         print("=" * 60)
         
         # Start Java engine
-        self.start_java_engine()
+        # self.start_java_engine()
         
         # Wait a bit for Java to start
         import time
